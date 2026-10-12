@@ -224,6 +224,9 @@ fn parse_id(s: &str) -> Result<EndpointId, WarpError> {
     Ok(EndpointId(id))
 }
 
+/// The wake replay cache on disk (envelope nonces, no secrets).
+const REPLAY_FILE: &str = "replay.bin";
+
 fn member_ids(log: &Log) -> Vec<EndpointId> {
     log.members().keys().copied().collect()
 }
@@ -480,13 +483,17 @@ impl Warpshot {
             .map_err(|_| WarpError::Storage)?;
         let reaper = Arc::clone(&mgr);
         rt.spawn(reaper.run_reaper());
+        let replay = ReplayCache::from_bytes(
+            &std::fs::read(dir.join(REPLAY_FILE)).unwrap_or_default(),
+            now_ms(),
+        );
         Ok(Arc::new(Self {
             dir,
             ks,
             dev: Mutex::new(dev),
             client,
             mgr,
-            replay: Mutex::new(ReplayCache::default()),
+            replay: Mutex::new(replay),
             disp: Dispatcher::new(),
             observer: std::sync::Mutex::new(None),
             active: Arc::default(),
@@ -976,13 +983,20 @@ impl Warpshot {
         transfer: u64,
         ask_above_bytes: u64,
     ) -> Result<Vec<ReceivedItem>, WarpError> {
-        let env = b64u::decode(&envelope_b64u).ok_or(WarpError::Invalid)?;
+        // Anything that is not a valid envelope for us is refused quietly (§7.3).
+        let env = b64u::decode(&envelope_b64u).ok_or(WarpError::Rejected)?;
         let mut synced = false;
         let (sender, action) = loop {
             let res = {
                 let dev = self.dev.lock().await;
                 let mut replay = self.replay.lock().await;
-                flow::open_wake(&dev, &env, now_ms(), &mut replay)
+                let r = flow::open_wake(&dev, &env, now_ms(), &mut replay);
+                if r.is_ok() {
+                    // The app process rarely lives until the next wake: keep the cache on disk.
+                    let _ =
+                        net::store::write_atomic(&self.dir.join(REPLAY_FILE), &replay.to_bytes());
+                }
+                r
             };
             match res {
                 Ok(v) => break v,

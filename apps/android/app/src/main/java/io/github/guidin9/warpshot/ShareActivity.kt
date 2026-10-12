@@ -1,6 +1,7 @@
 package io.github.guidin9.warpshot
 
 import android.content.ClipboardManager
+import android.content.ContentResolver
 import android.content.Intent
 import android.graphics.ImageDecoder
 import android.net.Uri
@@ -355,13 +356,18 @@ open class ShareActivity : ComponentActivity() {
         }.getOrNull()
     }
 
+    /**
+     * The shared items: `content://` only. A `file://` (or other) URI would be
+     * opened with this app's own rights, so any app could have us send our
+     * private files (keys, history) to the PC (security test plan 7).
+     */
     private fun uris(intent: Intent): List<Uri> = when (intent.action) {
         Intent.ACTION_SEND ->
             listOfNotNull(IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java))
         Intent.ACTION_SEND_MULTIPLE ->
             IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
         else -> emptyList()
-    }
+    }.filter { it.scheme == ContentResolver.SCHEME_CONTENT }
 }
 
 @Composable

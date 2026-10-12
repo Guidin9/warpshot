@@ -72,6 +72,23 @@ request; `last_seen` with 60 s granularity; default device names are generic
 
 ## 6. Security verification
 
+### 6.1 Attack test results (2026-10-12, roadmap "Security testing")
+
+White-box, against our own code, the emulator test group and our Worker.
+Automated parts: `cargo test -p warpshot-core --features attack --test attack`
+(also in CI), server `npm test`, agent `scripts/e2e-agent.mjs`.
+
+| Plan item | Result |
+|---|---|
+| 2 Malicious peer (valid member breaking the rules) | 9 tests pass: data beyond the declared size cut off before any write; endless stream stopped after the 2nd chunk; short data / wrong BLAKE3 → `ItemAck{ok:false}`, nothing kept; stream for another item refused; 4 GiB frame header refused before allocation; garbage frame → CRYPTO; 1001 items refused; 11 hostile names (traversal, drive paths, CON/NUL, RTL override, streams, trailing dot) all saved sanitized inside the folder; silent peer → handshake timeout (10 s); non-member and removed member refused at admission; a removed device's record refused; 200 stranger connections refused while a member's transfer went through (0.3 s). Residual: no overall receive deadline — a member can drip one chunk per < 30 s (accepted: members are trusted, the user can cancel). |
+| 3 Wake abuse | Unit tests already covered tampering, wrong recipient/key, stale, non-member, replay. Found: the replay cache lived only in memory, and a phone app starts fresh for most wakes, so a still-fresh envelope could be replayed (by the server) after a restart → spurious dial and "Couldn't receive". Fixed: cache persisted (`replay.bin`, phone and agent). Found: an undecodable envelope raised a failure notice. Fixed: refused quietly. Emulator: replay after restart, garbage, one flipped character, truncated, non-base64 → all refused silently, no dial. `group-changed` envelopes live 24 h > the 10 min replay window: a replay only triggers a log pull (harmless). |
+| 4 Pairing | Expired QR refused (the scanner refuses locally; a scanner that rewrites the expiry is refused by the PC with `Expired`); wrong proof refused; SAS refused on either side → nobody joins; two scanners racing for one code → exactly one joins. |
+| 5 Server API | 292 server tests (auth, replay, binding, cross-group, rate limits, size caps, CAS races) plus new: push tokens are never revealed and only the caller's row changes. Compromised server (client side): a forged add, a record signed by a removed device, rewritten history (fork) and withheld records (gap) are all refused; resent known records are skipped (fixed: they used to drop the whole batch). Live read-only probes against our Worker: no/garbage auth → 401 on log, presence, push-token, wake and WebSocket upgrade; creation without the token → 403; bad gid, unknown path, traversal → 400. |
+| 6 Local (named pipe) | Live: owner = user SID, protected DACL with a single ACE for that SID (no Everyone/SYSTEM/Administrators). A same-user process at low integrity is refused (`UnauthorizedAccess`). Squatting: unit test (first-instance flag) + the UI checks the server's user. Another account: denied by the DACL (no second account created). Accepted: a same-user medium-integrity process can drive the agent (e.g. `send.files`) — it can already read the user's files and use the network; Warpshot only sends to the user's own devices. |
+| 7 Android (partial) | Manifest: exported only MainActivity, ShareActivity and the tile service (bound with `BIND_QUICK_SETTINGS_TILE`); TransferService and PushService not exported; DemoActivity is debug-only. Found: ShareActivity opened any `file://` URI with the app's own rights, so another app could have it send its private files (wrapped keys, history) to the PC without a prompt. Fixed: `content://` only (also enforced in `Outgoing.copy`). Open: MobSF scan, Keystore extraction on a rooted device, clipboard review. |
+| 8 Traffic, 9 fuzzing, key theft | Open (next). |
+
+
 - Every validation rule in the protocol has positive **and** negative tests. Test
   vectors are shared by the Rust and TypeScript implementations.
 - All decoders are fuzzed with `cargo-fuzz`: CBOR, frames, envelopes, QR payload, records.

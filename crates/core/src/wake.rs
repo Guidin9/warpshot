@@ -418,6 +418,38 @@ impl ReplayCache {
         self.seen.insert(nonce, now_ms);
         true
     }
+
+    /// The live entries as `nonce ‖ u64be(seen_ms)` records, so the cache can
+    /// outlive the process: a phone app starts fresh for most wakes, and an
+    /// empty cache would accept a replayed envelope that is still fresh.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.seen.len().saturating_mul(24));
+        for (nonce, t) in &self.seen {
+            out.extend_from_slice(nonce);
+            out.extend_from_slice(&t.to_be_bytes());
+        }
+        out
+    }
+
+    /// Restores [`ReplayCache::to_bytes`] output; a torn tail, expired or
+    /// future entries and anything beyond the size bound are dropped.
+    pub fn from_bytes(b: &[u8], now_ms: u64) -> Self {
+        let mut seen = HashMap::new();
+        for rec in b.as_chunks::<24>().0 {
+            let Some((nonce, t)) = rec.split_first_chunk::<16>() else {
+                continue;
+            };
+            let Ok(t) = <[u8; 8]>::try_from(t) else {
+                continue;
+            };
+            let t = u64::from_be_bytes(t);
+            if t <= now_ms && now_ms.saturating_sub(t) < REPLAY_WINDOW_MS && seen.len() < Self::MAX
+            {
+                seen.insert(*nonce, t);
+            }
+        }
+        Self { seen }
+    }
 }
 
 /// Steps 3–7. On `NeedSync`, sync the log and call again.
@@ -654,6 +686,28 @@ pub(crate) mod tests {
             authorize(&forged, &me, &log, T0, &mut ReplayCache::default()),
             Err(WakeError::BadSignature)
         );
+    }
+
+    #[test]
+    fn replay_cache_survives_a_restart() {
+        let mut rc = ReplayCache::default();
+        assert!(rc.check_and_insert([1; 16], 1_000));
+        assert!(rc.check_and_insert([2; 16], 2_000));
+        let saved = rc.to_bytes();
+        // A new process restores it: the same nonce is still refused.
+        let mut back = ReplayCache::from_bytes(&saved, 3_000);
+        assert!(!back.check_and_insert([1; 16], 3_000));
+        assert!(!back.check_and_insert([2; 16], 3_000));
+        assert!(back.check_and_insert([3; 16], 3_000));
+        // Expired and future entries, a torn tail and garbage are dropped.
+        let late = ReplayCache::from_bytes(&saved, 2_000 + REPLAY_WINDOW_MS);
+        assert_eq!(late.seen.len(), 0);
+        let early = ReplayCache::from_bytes(&saved, 1_500);
+        assert_eq!(early.seen.len(), 1);
+        let mut torn = saved.clone();
+        torn.truncate(saved.len() - 5);
+        assert_eq!(ReplayCache::from_bytes(&torn, 3_000).seen.len(), 1);
+        assert_eq!(ReplayCache::from_bytes(&[0xff; 7], 3_000).seen.len(), 0);
     }
 
     #[test]

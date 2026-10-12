@@ -861,6 +861,42 @@ impl Session {
     }
 }
 
+/// Hostile-peer hooks for the security tests (`--features attack`,
+/// `tests/attack.rs`); never part of a product build.
+#[cfg(feature = "attack")]
+impl Session {
+    /// Opens an item stream headed `id` and sends `chunks` (plaintext, last
+    /// flag) sealed with the real item key, without any size or order checks.
+    pub async fn attack_stream(
+        &mut self,
+        id: u32,
+        chunks: &[(Vec<u8>, bool)],
+    ) -> Result<(), NetError> {
+        let mut s = self
+            .conn
+            .open_uni()
+            .await
+            .map_err(|_| NetError::Stream("io"))?;
+        s.write_all(&id.to_be_bytes())
+            .await
+            .map_err(|_| NetError::Stream("io"))?;
+        let mut sealer = ItemSealer::new(&self.ks, self.my_dir, id);
+        for (pt, last) in chunks {
+            send_chunk(&mut s, &mut sealer, pt, *last).await?;
+        }
+        let _ = s.finish();
+        Ok(())
+    }
+
+    /// Writes `bytes` on the control stream as they are (no framing, no sealing).
+    pub async fn attack_raw_ctrl(&mut self, bytes: &[u8]) -> Result<(), NetError> {
+        self.send
+            .write_all(bytes)
+            .await
+            .map_err(|_| NetError::Stream("io"))
+    }
+}
+
 /// Bytes of item data that will flow for the accepted items.
 fn streamed_total<'a>(items: impl Iterator<Item = &'a Item>, accepted: &[u32]) -> u64 {
     items

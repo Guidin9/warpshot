@@ -29,6 +29,10 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: test
         run: cargo test --workspace --locked
+      - name: security tests (hostile peer)
+        run: |
+          cargo clippy -p warpshot-core --features attack --all-targets --locked -- -D warnings
+          cargo test -p warpshot-core --features attack --test attack --locked
       - name: e2e (two warpctl processes)
         shell: powershell
         run: powershell -ExecutionPolicy Bypass -File scripts\e2e-local.ps1

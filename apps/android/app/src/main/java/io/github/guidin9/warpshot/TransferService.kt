@@ -297,6 +297,8 @@ object Outgoing {
 
     /** Copies a shared item into `cache/outgoing/<n>/<name>`; null if it can't be read. Cancellable. */
     suspend fun copy(ctx: Context, uri: Uri): File? {
+        // Never our own files through a file:// URI (see ShareActivity.uris).
+        if (uri.scheme != android.content.ContentResolver.SCHEME_CONTENT) return null
         val out = runCatching {
             File(dir(ctx), "${System.nanoTime()}").apply { mkdirs() }.let { File(it, describe(ctx, uri).first) }
         }.getOrNull() ?: return null
@@ -371,6 +373,7 @@ object Receiver {
         val items = try {
             core.handleWake(env, inbox.path, id.toULong(), Prefs.askAboveBytes(ctx))
         } catch (e: WarpException.Rejected) {
+            Log.i("Warpshot", "receive rejected")
             Transfers.finish(id, Outcome.Failed(errorText(ctx, e)))
             return // not a wake we accept (replay, stale, not a member): stay silent
         } catch (_: WarpException.Cancelled) {

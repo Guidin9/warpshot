@@ -60,10 +60,13 @@ pub fn apply(
                 // does not validate as the next record.
                 let (body, raw_body, signer, sig) = parse_signed(raw)?;
                 let id = crate::log::record_id(&raw_body, &signer, &sig);
-                if log.classify(body.seq, &id) == Incoming::Fork {
-                    return Err(NetError::Fork);
+                match log.classify(body.seq, &id) {
+                    Incoming::Fork => return Err(NetError::Fork),
+                    // A record we already hold (e.g. our own append pushed back
+                    // with newer ones): skip it instead of dropping the batch.
+                    Incoming::Known => {}
+                    Incoming::Next | Incoming::Gap => return Err(NetError::Log(e)),
                 }
-                return Err(NetError::Log(e));
             }
         }
     }

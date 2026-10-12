@@ -47,6 +47,24 @@ describe("push-token", () => {
   });
 });
 
+describe("push-token isolation (security test plan 5)", () => {
+  it("a member's token is never revealed and only the caller's own row changes", async () => {
+    const [A, B] = await Promise.all([device(1), device(2)]);
+    const tg = await createGroup(A, [B]);
+    expect((await call(A, "PUT", tg.path("push-token"), { provider: "fcm", token: "token-of-A" })).status).toBe(204);
+    for (const path of ["presence", "log"] as const) {
+      const body = await (await call(B, "GET", tg.path(path))).text();
+      expect(body, path).not.toContain("token-of-A");
+    }
+    // B setting and deleting "a" token touches only B's row.
+    expect((await call(B, "PUT", tg.path("push-token"), { provider: "fcm", token: "token-of-B" })).status).toBe(204);
+    expect((await call(B, "DELETE", tg.path("push-token"))).status).toBe(204);
+    const p = (await (await call(B, "GET", tg.path("presence"))).json()) as Presence;
+    expect(p.devices.find((d) => d.id === A.id)?.push).toBe(true);
+    expect(p.devices.find((d) => d.id === B.id)?.push).toBe(false);
+  });
+});
+
 describe("presence", () => {
   it("lists every member with online, push and minute-granular last_seen", async () => {
     const [A, B, C] = await Promise.all([device(1), device(2), device(3)]);

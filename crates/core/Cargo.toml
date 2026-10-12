@@ -29,6 +29,14 @@ subtle = "2.6"
 x-wing = { version = "0.1.1", features = ["zeroize"] }
 zeroize = { version = "1.8", features = ["derive"] }
 
+[features]
+# Hostile-peer hooks for tests/attack.rs (security tests); never enabled in builds.
+attack = []
+
+[[test]]
+name = "attack"
+required-features = ["attack"]
+
 [dev-dependencies]
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "net", "time", "io-util", "macros", "sync", "fs", "rt-multi-thread"] }

@@ -92,6 +92,8 @@ pub type UiSink = Box<dyn Fn(UiMsg) + Send + Sync>;
 
 const MAX_RECEIVE_DEFAULT_MB: u64 = 500;
 const WAKE_TTL: u32 = 60;
+/// The wake replay cache on disk (envelope nonces, no secrets).
+const REPLAY_FILE: &str = "replay.bin";
 
 /// `%LOCALAPPDATA%\Warpshot`, or `WARPSHOT_DATA_DIR` (tests).
 pub fn data_dir() -> Option<PathBuf> {
@@ -403,6 +405,10 @@ impl Service {
                 power::trim_working_set();
             })),
         );
+        let replay = ReplayCache::from_bytes(
+            &std::fs::read(dir.join(REPLAY_FILE)).unwrap_or_default(),
+            now_ms(),
+        );
         Ok(Arc::new(Self {
             dir,
             ks,
@@ -410,7 +416,7 @@ impl Service {
             client,
             server_url,
             mgr,
-            replay: Mutex::new(ReplayCache::default()),
+            replay: Mutex::new(replay),
             disp: Dispatcher::new(),
             send_lock: Mutex::new(()),
             ws: Mutex::new(None),
@@ -913,7 +919,12 @@ impl Service {
             let res = {
                 let dev = self.dev.lock().await;
                 let mut replay = self.replay.lock().await;
-                flow::open_wake(&dev, &env, now_ms(), &mut replay)
+                let r = flow::open_wake(&dev, &env, now_ms(), &mut replay);
+                if r.is_ok() {
+                    // Survives a restart of the agent (a replay must stay refused).
+                    let _ = write_atomic(&self.dir.join(REPLAY_FILE), &replay.to_bytes());
+                }
+                r
             };
             match res {
                 Ok(v) => break v,

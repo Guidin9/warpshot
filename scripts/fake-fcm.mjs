@@ -4,7 +4,8 @@
 // push message's wake envelope to the emulator's debug-only DemoActivity
 // (`--es wake`), which hands it to TransferService as a real push would.
 // The phone registers a fake push token with `--es push_token` (printed below).
-//   node scripts/fake-fcm.mjs <work dir>        (runs until stopped; use with test-pc.mjs)
+//   node scripts/fake-fcm.mjs <work dir> [--keep-last]   (runs until stopped; use with test-pc.mjs)
+// --keep-last also writes the latest envelope to <work dir>/last-wake.b64 (replay tests).
 // Logs (wrangler.log, fcm.log) carry no envelopes or tokens.
 import { execFileSync, spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -18,6 +19,7 @@ if (!process.argv[2]) {
   process.exit(2);
 }
 const work = path.resolve(process.argv[2]);
+const keepLast = process.argv.includes("--keep-last");
 fs.mkdirSync(work, { recursive: true });
 const FCM_PORT = 8788;
 const SERVER_PORT = 8787;
@@ -62,6 +64,7 @@ const fake = http.createServer((req, res) => {
           env: { ...process.env, MSYS_NO_PATHCONV: "1" },
         });
         log(`push: forwarded (${e.length} chars)`);
+        if (keepLast) fs.writeFileSync(path.join(work, "last-wake.b64"), e);
       } catch {
         log("push: adb failed");
       }

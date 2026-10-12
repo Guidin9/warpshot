@@ -110,12 +110,58 @@ impl AsyncWrite for Stream {
     }
 }
 
+/// The server's addresses from the last lookup, reused for up to
+/// [`DNS_REUSE`]: tokio resolves names on a helper thread, and on every
+/// WebSocket reconnect that thread pushed the idle agent over its thread
+/// budget (resource-budget.md §2). TLS still checks the certificate against
+/// the host name, so a stale address can only fail, never impersonate.
+static RESOLVED: std::sync::Mutex<Option<Resolved>> = std::sync::Mutex::new(None);
+const DNS_REUSE: std::time::Duration = std::time::Duration::from_secs(600);
+
+struct Resolved {
+    host: String,
+    port: u16,
+    addrs: Vec<std::net::SocketAddr>,
+    at: std::time::Instant,
+}
+
+fn cached_addrs(host: &str, port: u16) -> Option<Vec<std::net::SocketAddr>> {
+    let g = RESOLVED.lock().ok()?;
+    let r = g.as_ref()?;
+    (r.host == host && r.port == port && r.at.elapsed() < DNS_REUSE).then(|| r.addrs.clone())
+}
+
+fn remember_addrs(host: &str, port: u16, addrs: Option<Vec<std::net::SocketAddr>>) {
+    if let Ok(mut g) = RESOLVED.lock() {
+        *g = addrs.map(|addrs| Resolved {
+            host: host.to_owned(),
+            port,
+            addrs,
+            at: std::time::Instant::now(),
+        });
+    }
+}
+
+/// TCP to `host:port`, from the cached addresses when they are fresh.
+async fn tcp_connect(host: &str, port: u16) -> io::Result<TcpStream> {
+    if let Some(addrs) = cached_addrs(host, port) {
+        if let Ok(s) = TcpStream::connect(&addrs[..]).await {
+            return Ok(s);
+        }
+        remember_addrs(host, port, None);
+    }
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port)).await?.collect();
+    let s = TcpStream::connect(&addrs[..]).await?;
+    remember_addrs(host, port, Some(addrs));
+    Ok(s)
+}
+
 /// Opens a connection to the server (no timeout here; callers wrap it).
 pub(crate) async fn connect(
     url: &ServerUrl,
     counters: &Arc<Counters>,
 ) -> Result<Stream, ClientError> {
-    let tcp = TcpStream::connect((url.host.as_str(), url.port))
+    let tcp = tcp_connect(&url.host, url.port)
         .await
         .map_err(|_| ClientError::Connect)?;
     tcp.set_nodelay(true).map_err(|_| ClientError::Connect)?;

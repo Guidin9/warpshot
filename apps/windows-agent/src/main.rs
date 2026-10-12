@@ -296,9 +296,15 @@ fn spawn_runtime_thread(hwnd: usize, mut cmds: mpsc::UnboundedReceiver<Cmd>) {
         .name("warpshot-rt".into())
         .stack_size(1024 * 1024)
         .spawn(move || {
+            // Blocking work (DNS for the server connection, file writes) runs on
+            // at most one extra thread that ends a second after it goes quiet:
+            // with tokio's defaults (512 threads, 10 s keep-alive) a reconnect
+            // briefly took the agent to 8 threads (budget 6).
             let Ok(rt) = tokio::runtime::Builder::new_current_thread()
                 .enable_io()
                 .enable_time()
+                .max_blocking_threads(1)
+                .thread_keep_alive(std::time::Duration::from_secs(1))
                 .build()
             else {
                 return;
