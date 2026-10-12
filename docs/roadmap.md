@@ -14,17 +14,19 @@ connection (`docs/dev-setup.md`).
 - [x] **F0-3** `[DL]` Run `setup-dev.ps1` on a fast connection.
   Acceptance: the verification block shows MSVC installed and rustc with host
   `x86_64-pc-windows-msvc`; `cargo new` + `cargo run` works.
-- [ ] **F0-4** Accounts (user): Cloudflare (`npx wrangler login`); a Firebase
+- [x] **F0-4** Accounts (user): Cloudflare (`npx wrangler login`); a Firebase
   project with the Android app and a service-account key.
 - [x] **F0-5** Decide names: app name **Warpshot** (formerly the working name
   `pictransfer`), Android `applicationId` `io.github.guidin9.warpshot`, Worker
   name `warpshot`. Binaries: `warpshot-agent.exe`, `warpshot-ui.exe`, `warpctl`.
-- [ ] **F0-6** `[DL]` Spike A — iroh on demand (`docs/spikes.md`). Windows part done
-  2026-10-09; the Android and cross-network rows run with Spike D on the phone.
+- [x] **F0-6** `[DL]` Spike A — iroh on demand (`docs/spikes.md`). Windows part done
+  2026-10-09; the phone side was measured with the product app instead
+  (spikes.md "Phone ↔ PC routes").
 - [x] **F0-7** `[DL]` Spike B — agent skeleton vs the idle budget; first row in
   `resource-budget.md` §4.
 - [x] **F0-8** `[DL]` Spike C — DO keepalive. Set K in protocol §6.3.
-- [ ] **F0-9** `[DL]` Spike D — Android wake path on the user's phone.
+- [x] **F0-9** `[DL]` Spike D — Android wake path on the user's phone. Measured
+  with the product app (spikes.md Spike D); the Doze row is still open.
 - [x] **F0-10** ADR 0008, crate choices: X-Wing implementation, CBOR crate
   (`minicbor` vs `ciborium`, judged by strict-decoding support), SQLite binding.
 
@@ -222,8 +224,8 @@ path, NAT, port mapping, endpoint, membership log).
    ("lost or stolen") refusal, whether past transfers stay safe (forward
    secrecy) — add to the security plan below.
 7. Open: Doze/locked-phone delivery test; iroh transient threads after transfers; delete the
-   orphaned first Firebase key; redeploy the server (BOM-tolerant FCM
-   parse); push to GitHub.
+   orphaned first Firebase key. Done: server redeployed with the
+   BOM-tolerant FCM parse (2026-10-12).
 
 8. ✓ **Language (2026-10-10):** the agent (toasts, tray, flyout), the
    settings window and the Android app follow the system language: Turkish

@@ -33,7 +33,7 @@ Results:
 |---|---|---|---|---|---|---|---|
 | 2026-10-09 | PC ↔ PC (same Win11 host, 12 threads), EU relay, slow home uplink | bind 27–82 ms ✓; home relay online 0.77–1.15 s ✗ | 33–51 ms bind→connected ✓ / pending (phone) / 400–561 ms | 128–166 MB/s ✓; relay 0.5 MB/s (10 MB) | 0.9 → peak 5.0–6.7 → 3.6 MB; 0.07 MB after trim ✓ | all ✓ | see below |
 | 2026-10-10 | S21 FE (Android 16, Wi-Fi 11n) → PC (Ethernet), same router, `warpctl` | – | see "Phone ↔ PC routes" below | main AP: 100 MB in 13.1 s (7.6 MB/s), 20 MB in 3.5 s; via a repeater AP: no lasting direct path, relay only, 20 MB not done in 90 s | – | – | below |
-| – | Android | – | – | – | – | – | pending, run with Spike D on the phone |
+| – | Android bind (A1), cross-network (A2) | – | – | – | – | – | not run as a spike; the product app covers the path (Spike D row, roadmap 4c) |
 
 Probe: `spikes/iroh-probe` (iroh 1.3.0, `default-features = false`, `tls-ring`;
 release build). Raw JSON in `spikes/iroh-probe/out/` (not committed).
@@ -212,4 +212,4 @@ Results:
 
 | Date | Phone / Android | D1 | D2 | D3 | D4 | Notes |
 |---|---|---|---|---|---|---|
-| – | – | – | – | – | – | – |
+| 2026-10-10 | S21 FE / Android 16 | killed app woken in 187 ms (screen on); screen off / Doze pending | ✓ (`TransferService` started from the high-priority message) | Wi-Fi, screen on: text 2.4 s, image 3.7 s ✓; Doze pending | pending | measured with the product app instead of `spikes/android-wake`; the Doze / locked-phone run is open (roadmap "Next session" item 7) |
