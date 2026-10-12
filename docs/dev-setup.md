@@ -157,5 +157,8 @@ emulator -avd wstest -no-window -no-audio -no-boot-anim -no-snapshot -gpu swifts
   `cmd.json`) arrive as from a real push. App settings can be changed for a
   test with `adb shell run-as io.github.guidin9.warpshot` (`shared_prefs/`,
   app stopped first). Real FCM delivery, Doze and timings still need the phone.
+  A local server stopped hard (killed, not Ctrl+C) leaves its `workerd`
+  process behind; with two servers on port 8787 Windows hands requests to
+  either, so end leftover `workerd` processes before starting another.
 - Translated Rust is slow, and the software renderer spends a core on
   animations; time-sensitive checks (speeds, large files) belong on the phone.
