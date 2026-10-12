@@ -144,7 +144,18 @@ emulator -avd wstest -no-window -no-audio -no-boot-anim -no-snapshot -gpu swifts
   writes `qr.txt` and confirms the SAS itself), `adb reverse tcp:8787
   tcp:8787`, then `adb shell am start -n
   io.github.guidin9.warpshot/.DemoActivity --es pair "$(cat <work dir>/qr.txt)"`
-  stands in for the camera scan. Received items land in `<work dir>\received`.
-  PC → phone needs FCM and is tested on a real phone.
+  stands in for the camera scan; confirm the code on the phone by tapping
+  "They match" (`uiautomator dump` gives its bounds, then `adb shell input
+  tap`). Received items land in `<work dir>\received`.
+- **PC → phone without Firebase:** run `node scripts\fake-fcm.mjs <dir>`
+  instead of `wrangler dev` (it starts the local server itself, with FCM
+  pointed at a fake host and a throwaway key, and runs `adb reverse`), then
+  register a fake push token once after pairing: `adb shell am start -S -n
+  io.github.guidin9.warpshot/.DemoActivity --es push_token emu-fake-token`.
+  Each wake the server pushes is handed to the app through the debug-only
+  `--es wake`, so sends from the test PC (`{"method": "send.files", ...}` in
+  `cmd.json`) arrive as from a real push. App settings can be changed for a
+  test with `adb shell run-as io.github.guidin9.warpshot` (`shared_prefs/`,
+  app stopped first). Real FCM delivery, Doze and timings still need the phone.
 - Translated Rust is slow, and the software renderer spends a core on
   animations; time-sensitive checks (speeds, large files) belong on the phone.

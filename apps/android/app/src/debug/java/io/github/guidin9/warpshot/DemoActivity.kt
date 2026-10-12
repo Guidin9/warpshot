@@ -30,11 +30,26 @@ import uniffi.warpshot_ffi.DeviceEntry
  *
  * `--es pair <qr text>` instead pairs with that code, as if scanned (the
  * emulator has no camera to scan with), and opens the main screen.
+ *
+ * Wake path without FCM (scripts/fake-fcm.mjs): `--es push_token <token>`
+ * registers that token with the server instead of Firebase's, and
+ * `--es wake <envelope>` hands a wake envelope to [TransferService] as if a
+ * push message had carried it.
  */
 class DemoActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        intent.getStringExtra("wake")?.let { env ->
+            TransferService.start(applicationContext, env)
+            finish()
+            return
+        }
+        intent.getStringExtra("push_token")?.let { token ->
+            Push.register(applicationContext, token)
+            finish()
+            return
+        }
         intent.getStringExtra("pair")?.let { qr ->
             Pairing.start(applicationContext, qr)
             startActivity(Intent(this, MainActivity::class.java))
@@ -58,6 +73,7 @@ private fun sampleThumb() = Bitmap.createBitmap(320, 320, Bitmap.Config.ARGB_888
 
 private val sending = TransferState(1, false, pc.name, "Screenshot_20261010_142233.png", 6_100_000, 14_800_000, 9_400_000, running = true)
 private val receiving = TransferState(2, true, pc.name, "", 0, 0, 0)
+private val asking = receiving.copy(id = 3, ask = Ask(1, 1_840_000_000, "Holiday 2026 (4K).mp4"))
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -73,6 +89,7 @@ private fun Render(screen: String) {
         )
         "sas" -> OnboardingScreen(PairState.Confirm("K7Q-M2X", pc.name, CompletableFuture()), {}, {})
         "home" -> HomeScreen(listOf(pc), pc, "", {}, emptyList(), false, true, PairState.Idle, snackbar, HomeActions())
+        "home_ask" -> HomeScreen(listOf(pc), pc, "", {}, listOf(asking), true, true, PairState.Idle, snackbar, HomeActions())
         "home_busy" -> {
             LaunchedEffect(Unit) { snackbar.showSnackbar("Sent to ${pc.name}.") }
             HomeScreen(
