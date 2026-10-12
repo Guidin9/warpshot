@@ -119,6 +119,9 @@ in `server\`, run `cargo build -p warpshot-agent` and
 `cargo build -p warpshot-ffi --example phone_sim` (one command with both would
 build only the example), then
 `node scripts\e2e-agent.mjs`.
+Traffic check (nothing readable by the server or FCM carries content, names
+or addresses; starts its own server on ports 8797–8799, same two builds):
+`node scripts	raffic-check.mjs`.
 
 ## 9. Android screens without a phone (emulator)
 

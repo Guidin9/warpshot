@@ -10,6 +10,8 @@
 //! phone_sim <dir> <server_url> send-text-cancel-stdin <target_hex> <text>   (cancels when a line
 //!     arrives on stdin, then stays up 8 s like the app, so a late dial from the woken PC is answered)
 //! phone_sim <dir> <server_url> devices
+//! phone_sim <dir> <server_url> push-token <token>
+//! phone_sim <dir> <server_url> wake <envelope_b64u> <inbox_dir>   (handles a push like PushService)
 //! ```
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
@@ -138,6 +140,14 @@ fn main() {
                     .await
                     .map(|()| "sent".into())
             }
+            "push-token" => w2
+                .register_push_token(a[3].clone())
+                .await
+                .map(|()| "registered".into()),
+            "wake" => w2
+                .handle_wake(a[3].clone(), a[4].clone(), 1, u64::MAX)
+                .await
+                .map(|items| format!("received {}", items.len())),
             "devices" => Ok(w2
                 .devices()
                 .await

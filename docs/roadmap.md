@@ -305,8 +305,8 @@ path, NAT, port mapping, endpoint, membership log).
 
 ## Security testing (attack our own app) — before wider use
 
-Progress (2026-10-12): items 2–6 done, 7 partly; results and fixes in
-`docs/threat-model.md` §6.1. Next: 8 (traffic), 9 (fuzz every decoder),
+Progress (2026-10-12): items 2–6 and 8 done, 7 partly; results and fixes in
+`docs/threat-model.md` §6.1. Next: 9 (fuzz every decoder),
 key-theft write-up (roadmap "Next session" 6), the rest of 7; then the
 phone-only checks (1 on the phone, 7 Keystore/rooted, 8 phone traffic).
 
