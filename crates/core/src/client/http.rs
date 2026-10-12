@@ -372,4 +372,44 @@ mod tests {
         many.extend_from_slice(b"\r\n");
         assert_eq!(read(&many, 1 << 20), Err(ClientError::Protocol));
     }
+
+    fn fuzz_seeds() -> Vec<Vec<u8>> {
+        [
+            &b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX: y\r\n\r\n{}"[..],
+            b"HTTP/1.1 204 No Content\r\n\r\n",
+            b"HTTP/1.1 500 Internal\r\n\r\nabc",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n",
+            b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+        ]
+        .iter()
+        .map(|s| s.to_vec())
+        .collect()
+    }
+
+    /// No panic; a body never exceeds the cap.
+    fn fuzz_target(rt: &tokio::runtime::Runtime, b: &[u8]) -> bool {
+        if let Ok(Some((_, n))) = parse_head(b) {
+            assert!(n <= b.len());
+        }
+        let mut s = b;
+        let Ok(r) = rt.block_on(read_response(&mut s, 64)) else {
+            return false;
+        };
+        assert!(r.body.len() <= 64);
+        true
+    }
+
+    #[test]
+    fn fuzz_short() {
+        let rt = rt();
+        crate::fuzz::short(&fuzz_seeds(), 50_000, |b| fuzz_target(&rt, b));
+    }
+
+    /// Long run: see `crate::fuzz`.
+    #[test]
+    #[ignore]
+    fn fuzz_long() {
+        let rt = rt();
+        crate::fuzz::long(&fuzz_seeds(), |b| fuzz_target(&rt, b));
+    }
 }

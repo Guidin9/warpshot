@@ -104,4 +104,40 @@ mod tests {
             assert_eq!(decode(&encode(&data[..n])).unwrap(), &data[..n]);
         }
     }
+
+    fn fuzz_seeds() -> Vec<Vec<u8>> {
+        [
+            "",
+            "AA",
+            "AAE",
+            "AAEC",
+            "-_8",
+            "hAFIAeun9j6-O95ZBGCGuIcstqqHcLjWzpe9kOfM",
+        ]
+        .iter()
+        .map(|s| s.as_bytes().to_vec())
+        .collect()
+    }
+
+    /// Accepted ⇒ canonical (re-encoding gives the same text).
+    fn fuzz_target(b: &[u8]) -> bool {
+        let s = crate::fuzz::text(b);
+        let Some(v) = decode(&s) else {
+            return false;
+        };
+        assert_eq!(encode(&v), s, "non-canonical base64url accepted");
+        true
+    }
+
+    #[test]
+    fn fuzz_short() {
+        crate::fuzz::short(&fuzz_seeds(), 100_000, fuzz_target);
+    }
+
+    /// Long run: see `crate::fuzz`.
+    #[test]
+    #[ignore]
+    fn fuzz_long() {
+        crate::fuzz::long(&fuzz_seeds(), fuzz_target);
+    }
 }

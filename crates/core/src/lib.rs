@@ -4,6 +4,8 @@
 pub mod b64u;
 pub mod cbor;
 pub mod client;
+#[cfg(test)]
+mod fuzz;
 pub mod history;
 pub mod keys;
 pub mod log;

@@ -133,4 +133,28 @@ mod tests {
             assert!(parse(&bad).is_none(), "{bad}");
         }
     }
+
+    fn fuzz_seeds() -> Vec<Vec<u8>> {
+        let ik = IdentityKey::from_secret(&[1; 32]);
+        vec![
+            authorization(&ik, "POST", "/v1/groups/abc/log", 1_000, b"{}").into_bytes(),
+            authorization(&ik, "GET", "/v1/groups/abc/ws", 9, b"").into_bytes(),
+        ]
+    }
+
+    fn fuzz_target(b: &[u8]) -> bool {
+        parse(&crate::fuzz::text(b)).is_some()
+    }
+
+    #[test]
+    fn fuzz_short() {
+        crate::fuzz::short(&fuzz_seeds(), 100_000, fuzz_target);
+    }
+
+    /// Long run: see `crate::fuzz`.
+    #[test]
+    #[ignore]
+    fn fuzz_long() {
+        crate::fuzz::long(&fuzz_seeds(), fuzz_target);
+    }
 }

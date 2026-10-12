@@ -622,4 +622,62 @@ mod tests {
         assert_eq!(resolve(Some(g), Some(g)), Resolution::AlreadyPaired(g));
         assert_eq!(resolve(Some(g), Some(h)), Resolution::OtherGroup);
     }
+
+    fn fuzz_seeds() -> Vec<Vec<u8>> {
+        let head = Some(Head {
+            seq: 2,
+            id: RecordId([5; 32]),
+        });
+        let h = PairHello {
+            device: dev("phone", 2, 2),
+            proof: [6; 32],
+            group: Some(GroupId([3; 16])),
+            head,
+        };
+        let i = PairInfo {
+            device: dev("pc", 1, 1),
+            group: None,
+            head: None,
+        };
+        vec![
+            payload().encode().into_bytes(),
+            h.encode(),
+            i.encode(),
+            pair_done(&[vec![1, 2, 3], vec![4]]),
+        ]
+    }
+
+    /// No panic; whatever is accepted re-encodes to an equal message.
+    fn fuzz_target(b: &[u8]) -> bool {
+        let mut ok = false;
+        if let Ok(p) = QrPayload::parse(&crate::fuzz::text(b)) {
+            assert_eq!(QrPayload::parse(&p.encode()), Ok(p));
+            ok = true;
+        }
+        if let Ok(h) = PairHello::parse(b) {
+            assert_eq!(PairHello::parse(&h.encode()), Ok(h));
+            ok = true;
+        }
+        if let Ok(i) = PairInfo::parse(b) {
+            assert_eq!(PairInfo::parse(&i.encode()), Ok(i));
+            ok = true;
+        }
+        if let Ok(r) = parse_pair_done(b) {
+            assert_eq!(parse_pair_done(&pair_done(&r)), Ok(r));
+            ok = true;
+        }
+        ok
+    }
+
+    #[test]
+    fn fuzz_short() {
+        crate::fuzz::short(&fuzz_seeds(), 100_000, fuzz_target);
+    }
+
+    /// Long run: see `crate::fuzz`.
+    #[test]
+    #[ignore]
+    fn fuzz_long() {
+        crate::fuzz::long(&fuzz_seeds(), fuzz_target);
+    }
 }

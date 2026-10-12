@@ -122,6 +122,9 @@ build only the example), then
 Traffic check (nothing readable by the server or FCM carries content, names
 or addresses; starts its own server on ports 8797–8799, same two builds):
 `node scripts	raffic-check.mjs`.
+Long fuzzing (each decoder's target, in parallel; `WARPSHOT_FUZZ_SECS` per target):
+`$env:WARPSHOT_FUZZ_SECS=600; cargo test -p warpshot-core --release --lib fuzz_long -- --ignored --nocapture`;
+server: `$env:FUZZ_N=50000; npm test -- fuzz` in `server\`.
 
 ## 9. Android screens without a phone (emulator)
 

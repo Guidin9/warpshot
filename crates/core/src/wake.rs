@@ -724,4 +724,49 @@ pub(crate) mod tests {
         }
         assert!(!rc.check_and_insert([2; 16], REPLAY_WINDOW_MS + 3));
     }
+
+    fn fuzz_seeds() -> Vec<Vec<u8>> {
+        let (log, pc, phone, phone_kk) = setup();
+        let inner = connect_inner(&log, T0, 1);
+        let mut gc = connect_inner(&log, T0, 2);
+        gc.kind = Kind::GroupChanged;
+        let mut s = vec![inner.encode(), gc.encode()];
+        for i in [&inner, &gc] {
+            s.push(seal(&pc, &phone.endpoint_id(), &phone_kk.public_key(), i).unwrap());
+        }
+        let mut cache = [[1u8; 16].as_slice(), &T0.to_be_bytes()].concat();
+        cache.extend_from_slice(&[[2u8; 16].as_slice(), &(T0 - 1).to_be_bytes()].concat());
+        s.push(cache);
+        s
+    }
+
+    /// Inner payloads re-encode to an equal value; envelopes and the replay
+    /// cache file never panic, and the cache never grows on load.
+    fn fuzz_target(b: &[u8], me: &EndpointId, kk: &KemKey) -> bool {
+        let mut ok = false;
+        if let Ok(i) = Inner::parse(b) {
+            assert_eq!(Inner::parse(&i.encode()), Ok(i));
+            ok = true;
+        }
+        ok |= open(b, me, |_| Some(kk)).is_ok();
+        assert!(ReplayCache::from_bytes(b, T0).to_bytes().len() <= b.len());
+        ok
+    }
+
+    #[test]
+    fn fuzz_short() {
+        let (_, _, phone, kk) = setup();
+        let me = phone.endpoint_id();
+        // Envelopes that get as far as decapsulation are slow in debug builds.
+        crate::fuzz::short(&fuzz_seeds(), 10_000, |b| fuzz_target(b, &me, &kk));
+    }
+
+    /// Long run: see `crate::fuzz`.
+    #[test]
+    #[ignore]
+    fn fuzz_long() {
+        let (_, _, phone, kk) = setup();
+        let me = phone.endpoint_id();
+        crate::fuzz::long(&fuzz_seeds(), |b| fuzz_target(b, &me, &kk));
+    }
 }

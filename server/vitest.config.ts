@@ -26,6 +26,8 @@ export default defineConfig({
             private_key: privateKey,
           }),
           TEST_FCM_PUBLIC_KEY: publicKey,
+          // test/fuzz.test.ts: inputs per decoder (default 3000).
+          FUZZ_N: process.env.FUZZ_N ?? "",
         },
       },
     }),

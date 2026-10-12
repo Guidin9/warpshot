@@ -435,4 +435,47 @@ mod tests {
             Err(ClientError::Argument)
         );
     }
+
+    fn fuzz_seeds() -> Vec<Vec<u8>> {
+        let id = "A".repeat(43);
+        [
+            format!(r#"{{"records":["AAEC","AQ"],"head":{{"seq":3,"id":"{id}"}},"more":false}}"#),
+            format!(r#"{{"devices":[{{"id":"{id}","online":true,"push":false,"last_seen":7}}]}}"#),
+            format!(
+                r#"{{"devices":[{{"id":"{id}","online":false,"push":true,"last_seen":null}}]}}"#
+            ),
+            r#"{"error":"not-member"}"#.to_string(),
+        ]
+        .iter()
+        .map(|s| s.as_bytes().to_vec())
+        .collect()
+    }
+
+    /// Server bodies as every response parser sees them: no panic.
+    fn fuzz_target(b: &[u8]) -> bool {
+        let _ = server_error(&resp(400, &crate::fuzz::text(b)));
+        let r = Response {
+            status: 200,
+            body: b.to_vec(),
+        };
+        let Ok(v) = parse_body(&r) else {
+            return false;
+        };
+        let records = parse_records(v.get("records")).is_ok();
+        let devices = parse_devices(v.get("devices")).is_ok();
+        let head = v.get("head").map(crate::client::parse_head);
+        records || devices || matches!(head, Some(Ok(_)))
+    }
+
+    #[test]
+    fn fuzz_short() {
+        crate::fuzz::short(&fuzz_seeds(), 100_000, fuzz_target);
+    }
+
+    /// Long run: see `crate::fuzz`.
+    #[test]
+    #[ignore]
+    fn fuzz_long() {
+        crate::fuzz::long(&fuzz_seeds(), fuzz_target);
+    }
 }

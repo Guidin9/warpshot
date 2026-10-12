@@ -663,21 +663,8 @@ mod tests {
         assert_eq!(m.opt_uint(9), Ok(None));
     }
 
-    /// xorshift64* — deterministic, dependency-free input generator.
-    struct Rng(u64);
-    impl Rng {
-        fn next(&mut self) -> u64 {
-            self.0 ^= self.0 >> 12;
-            self.0 ^= self.0 << 25;
-            self.0 ^= self.0 >> 27;
-            self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-        }
-    }
-
-    /// Accepted input ⇒ re-encoding reproduces it exactly (canonical form is unique);
-    /// no input panics. Mixes random bytes with mutations of valid encodings.
-    fn fuzz_iterations(n: u64, seed: u64) {
-        let seeds: Vec<Vec<u8>> = [
+    fn fuzz_seeds() -> Vec<Vec<u8>> {
+        [
             "a4010203424142056161074101",
             "83010203",
             "a201820102038144deadbeef",
@@ -686,63 +673,28 @@ mod tests {
         ]
         .iter()
         .map(|h| hex(h))
-        .collect();
-        let mut r = Rng(seed);
-        let lim = Limits::new(4096);
-        for _ in 0..n {
-            let mut b = if r.next().is_multiple_of(2) {
-                let len = (r.next() % 48) as usize;
-                (0..len).map(|_| r.next() as u8).collect::<Vec<u8>>()
-            } else {
-                let mut b = seeds[(r.next() % seeds.len() as u64) as usize].clone();
-                for _ in 0..=(r.next() % 3) {
-                    match r.next() % 4 {
-                        0 if !b.is_empty() => {
-                            let i = (r.next() % b.len() as u64) as usize;
-                            b[i] = r.next() as u8;
-                        }
-                        1 if !b.is_empty() => {
-                            let i = (r.next() % b.len() as u64) as usize;
-                            b.remove(i);
-                        }
-                        2 => {
-                            let i = (r.next() % (b.len() as u64 + 1)) as usize;
-                            b.insert(i, r.next() as u8);
-                        }
-                        _ => b.truncate((r.next() % (b.len() as u64 + 1)) as usize),
-                    }
-                }
-                b
-            };
-            if let Ok(v) = decode(&b, &lim) {
-                assert_eq!(
-                    encode(&v).unwrap(),
-                    b,
-                    "non-canonical input accepted: {b:02x?}"
-                );
-            }
-            b.clear();
-        }
+        .collect()
+    }
+
+    /// Accepted input ⇒ re-encoding reproduces it exactly (canonical form is
+    /// unique); no input panics.
+    fn fuzz_target(b: &[u8]) -> bool {
+        let Ok(v) = decode(b, &Limits::new(4096)) else {
+            return false;
+        };
+        assert_eq!(encode(&v).unwrap(), b, "non-canonical input accepted");
+        true
     }
 
     #[test]
     fn fuzz_short() {
-        fuzz_iterations(200_000, 0x9e37_79b9_7f4a_7c15);
+        crate::fuzz::short(&fuzz_seeds(), 200_000, fuzz_target);
     }
 
-    /// Long run: `WARPSHOT_FUZZ_SECS=600 cargo test -p warpshot-core --release fuzz_long -- --ignored`
+    /// Long run: see `crate::fuzz`.
     #[test]
     #[ignore]
     fn fuzz_long() {
-        let secs: u64 = std::env::var("WARPSHOT_FUZZ_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(60);
-        let start = std::time::Instant::now();
-        let mut seed = 1u64;
-        while start.elapsed().as_secs() < secs {
-            fuzz_iterations(100_000, seed);
-            seed += 1;
-        }
+        crate::fuzz::long(&fuzz_seeds(), fuzz_target);
     }
 }

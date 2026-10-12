@@ -400,4 +400,32 @@ mod tests {
         let v = parse(s.as_bytes()).unwrap();
         assert_eq!(v.get("x").unwrap().as_str(), Some("q\"\\\u{1}\n"));
     }
+
+    fn fuzz_seeds() -> Vec<Vec<u8>> {
+        [
+            r#" {"records": ["AA", "AQ"], "head": {"seq": 3, "id": "x"}, "n": null, "b": true} "#,
+            r#"{"t":"wake","env":"AAEC"}"#,
+            r#"[[[[[[[1]]]]]]]"#,
+            r#"{"a":"\u00e9\ud83d\ude00\n","b":[false,18446744073709551615]}"#,
+        ]
+        .iter()
+        .map(|s| s.as_bytes().to_vec())
+        .collect()
+    }
+
+    fn fuzz_target(b: &[u8]) -> bool {
+        parse(b).is_ok()
+    }
+
+    #[test]
+    fn fuzz_short() {
+        crate::fuzz::short(&fuzz_seeds(), 100_000, fuzz_target);
+    }
+
+    /// Long run: see `crate::fuzz`.
+    #[test]
+    #[ignore]
+    fn fuzz_long() {
+        crate::fuzz::long(&fuzz_seeds(), fuzz_target);
+    }
 }

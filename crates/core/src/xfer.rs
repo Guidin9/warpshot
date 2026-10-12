@@ -1041,4 +1041,105 @@ mod tests {
         let th2 = KeySchedule::new(&[1; 32], &[2; 32], [4; 32]);
         assert_ne!(*ks.ctrl_key(Dir::Dl), *th2.ctrl_key(Dir::Dl));
     }
+
+    fn fuzz_seeds() -> Vec<Vec<u8>> {
+        let head = Head {
+            seq: 3,
+            id: RecordId([4; 32]),
+        };
+        let ek = EphemeralKem::from_seed([5; 32]);
+        let h = Hello {
+            session: [0; 16],
+            ek: ek.public_key(),
+            head,
+            caps: vec![1, 2],
+        };
+        let (_, ct) = encapsulate_with(&h.ek, &[6; 64]).unwrap();
+        let a = HelloAck {
+            ct,
+            head,
+            caps: vec![],
+        };
+        let text = Item {
+            id: 1,
+            kind: kind::TEXT,
+            name: "note.txt".into(),
+            mime: "text/plain".into(),
+            size: 5,
+            created_at: 9,
+            text: Some("hello".into()),
+        };
+        let file = Item {
+            id: 2,
+            kind: kind::FILE,
+            name: "a.bin".into(),
+            mime: "application/octet-stream".into(),
+            size: 1 << 30,
+            created_at: 9,
+            text: None,
+        };
+        let mut s = vec![h.encode(), a.encode()];
+        for c in [
+            Ctrl::Offer {
+                session: [1; 16],
+                items: vec![text, file],
+            },
+            Ctrl::Accept { ids: vec![1, 2] },
+            Ctrl::Decline { reason: 2 },
+            Ctrl::ItemDone {
+                id: 2,
+                blake3: [7; 32],
+                size: 1 << 30,
+            },
+            Ctrl::ItemAck {
+                id: 2,
+                ok: false,
+                err: Some(3),
+            },
+            Ctrl::Cancel { id: Some(1) },
+            Ctrl::Error {
+                code: 4,
+                detail: Some("x".into()),
+            },
+            Ctrl::Bye,
+            Ctrl::LogReq { after: 7 },
+            Ctrl::LogRecs {
+                records: vec![vec![1, 2, 3], vec![4]],
+                more: true,
+            },
+        ] {
+            s.push(c.encode());
+        }
+        s
+    }
+
+    /// No panic; whatever is accepted re-encodes to an equal message.
+    fn fuzz_target(b: &[u8]) -> bool {
+        let mut ok = false;
+        if let Ok(h) = Hello::parse(b) {
+            assert_eq!(Hello::parse(&h.encode()), Ok(h));
+            ok = true;
+        }
+        if let Ok(a) = HelloAck::parse(b) {
+            assert_eq!(HelloAck::parse(&a.encode()), Ok(a));
+            ok = true;
+        }
+        if let Ok(c) = Ctrl::parse(b) {
+            assert_eq!(Ctrl::parse(&c.encode()), Ok(c));
+            ok = true;
+        }
+        ok
+    }
+
+    #[test]
+    fn fuzz_short() {
+        crate::fuzz::short(&fuzz_seeds(), 100_000, fuzz_target);
+    }
+
+    /// Long run: see `crate::fuzz`.
+    #[test]
+    #[ignore]
+    fn fuzz_long() {
+        crate::fuzz::long(&fuzz_seeds(), fuzz_target);
+    }
 }

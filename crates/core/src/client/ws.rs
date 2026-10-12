@@ -1308,4 +1308,51 @@ mod tests {
         assert_eq!(next(&mut rx).await, Event::Connected);
         h.close().await;
     }
+
+    fn fuzz_seeds() -> Vec<Vec<u8>> {
+        let msgs = [
+            r#"{"t":"wake","env":"AAEC"}"#,
+            r#"{"t":"ack","id":4,"via":"push"}"#,
+            r#"{"t":"err","id":null,"code":"bad-request"}"#,
+            r#"{"t":"bye","code":"not-member"}"#,
+            r#"{"t":"future","x":1}"#,
+        ];
+        let mut s: Vec<Vec<u8>> = msgs.iter().map(|m| m.as_bytes().to_vec()).collect();
+        for m in msgs {
+            let mut f = vec![0x81, m.len() as u8];
+            f.extend_from_slice(m.as_bytes());
+            s.push(f);
+        }
+        let mut long = vec![0x82, 126, 0, 200];
+        long.extend_from_slice(&[7; 200]);
+        s.extend([
+            vec![0x81, 1, b'o'],
+            vec![0x89, 0],
+            vec![0x88, 2, 3, 0xe8],
+            long,
+        ]);
+        s
+    }
+
+    /// No panic; a frame never claims more than it consumed or than the cap.
+    fn fuzz_target(b: &[u8]) -> bool {
+        let mut ok = false;
+        if let Ok(Some((f, n))) = parse_frame(b, 64) {
+            assert!(n <= b.len() && f.payload.len() <= 64);
+            ok = true;
+        }
+        ok | matches!(parse_server_message(&crate::fuzz::text(b)), Ok(Some(_)))
+    }
+
+    #[test]
+    fn fuzz_short() {
+        crate::fuzz::short(&fuzz_seeds(), 100_000, fuzz_target);
+    }
+
+    /// Long run: see `crate::fuzz`.
+    #[test]
+    #[ignore]
+    fn fuzz_long() {
+        crate::fuzz::long(&fuzz_seeds(), fuzz_target);
+    }
 }

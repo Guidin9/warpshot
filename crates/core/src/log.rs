@@ -935,4 +935,41 @@ pub(crate) mod tests {
             let _ = a.endpoint_id();
         }
     }
+
+    /// A log with PC and phone, and the next valid record (a third device).
+    fn fuzz_log() -> (Log, Vec<Vec<u8>>) {
+        let (mut log, a) = genesis_log();
+        let b = key(2);
+        let add = sign_record(&a, &body(&log, &b, Op::Add(dev("phone", 2, 2)), 1));
+        log.append(&add, T0).unwrap();
+        let c = key(3);
+        let next = sign_record(&b, &body(&log, &c, Op::Add(dev("tablet", 2, 3)), 2));
+        let genesis = log.records().first().unwrap().raw.clone();
+        (log, vec![genesis, add, next])
+    }
+
+    /// No panic, and the log never changes unless the record was accepted.
+    fn fuzz_target(b: &[u8], log: &Log) -> bool {
+        let parsed = parse_signed(b).is_ok();
+        let mut l = log.clone();
+        let appended = l.append(b, T0 + 10).is_ok();
+        if !appended {
+            assert_eq!(l.head(), log.head());
+        }
+        parsed
+    }
+
+    #[test]
+    fn fuzz_short() {
+        let (log, seeds) = fuzz_log();
+        crate::fuzz::short(&seeds, 20_000, |b| fuzz_target(b, &log));
+    }
+
+    /// Long run: see `crate::fuzz`.
+    #[test]
+    #[ignore]
+    fn fuzz_long() {
+        let (log, seeds) = fuzz_log();
+        crate::fuzz::long(&seeds, |b| fuzz_target(b, &log));
+    }
 }
