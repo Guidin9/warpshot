@@ -223,9 +223,10 @@ path, NAT, port mapping, endpoint, membership log).
 6. **Security tests for key theft:** stolen-key scenario, revocation
    ("lost or stolen") refusal, whether past transfers stay safe (forward
    secrecy) — add to the security plan below.
-7. Open: Doze/locked-phone delivery test; iroh transient threads after transfers; delete the
-   orphaned first Firebase key. Done: server redeployed with the
-   BOM-tolerant FCM parse (2026-10-12).
+7. Open: Doze/locked-phone delivery test; iroh transient threads after transfers.
+   Done (2026-10-12): server redeployed with the BOM-tolerant FCM parse; the
+   orphaned first Firebase key deleted (the never-used one, by the per-key
+   authentication metrics; the key in use stays).
 
 8. ✓ **Language (2026-10-10):** the agent (toasts, tray, flyout), the
    settings window and the Android app follow the system language: Turkish
