@@ -181,4 +181,15 @@
     <string name="set_ask_never_desc">Her boyuttaki dosya sormadan alınır.</string>
     <string name="set_ask_q">Şu boyutun üzerindeki dosyaları almadan önce sor</string>
     <string name="change">Değiştir</string>
+    <string name="channel_alerts">Güvenlik uyarıları</string>
+    <string name="alert_title">Warpshot grubunuza yeni cihaz eklendi</string>
+    <string name="alert_text">“%1$s” (%2$s), %3$s tarafından eklendi.</string>
+    <string name="alert_text_unknown">“%1$s” (%2$s) grubunuza eklendi.</string>
+    <string name="alert_not_me">Bunu ben yapmadım</string>
+    <string name="alert_was_me">Bendim</string>
+    <string name="alert_body">Bu cihazı siz eklemediyseniz hemen çıkarın: cihazlarınıza erişimi anında kesilir.</string>
+    <string name="alert_also_adder">Onu ekleyen %1$s cihazını da çıkar</string>
+    <string name="platform_windows">Windows</string>
+    <string name="platform_android">Android</string>
+    <string name="platform_other">diğer</string>
 </resources>

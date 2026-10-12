@@ -12,7 +12,7 @@ use warpshot_core::{
     client::Client,
     history::{self, Direction, Retention},
     keys::{EndpointId, KeyError, Keystore},
-    log::{Op, RecordBody, RemoveReason, platform, sign_record},
+    log::{Log, Op, RecordBody, RemoveReason, platform, sign_record},
     net::{
         self, NetError, Relay,
         dispatch::Dispatcher,
@@ -115,6 +115,18 @@ pub trait TransferObserver: Send + Sync {
     /// for this device's UI only. The question ends with the transfer; no
     /// answer within 110 s declines those items.
     fn on_ask_large(&self, transfer: u64, count: u32, total_bytes: u64, name: String);
+    /// Another member added device `id` (§4.6): alert the user and offer
+    /// "This wasn't me" ([`Warpshot::remove_device_not_me`]). `by_id` /
+    /// `by_name` name the member who signed the add; empty if it is no longer
+    /// a member. Names were validated by the log (no control or bidi characters).
+    fn on_device_added(
+        &self,
+        id: String,
+        name: String,
+        platform: u64,
+        by_id: String,
+        by_name: String,
+    );
 }
 
 struct KsAdapter(Arc<dyn PlatformKeystore>);
@@ -210,6 +222,10 @@ fn parse_id(s: &str) -> Result<EndpointId, WarpError> {
         *b = u8::from_str_radix(pair, 16).map_err(|_| WarpError::Invalid)?;
     }
     Ok(EndpointId(id))
+}
+
+fn member_ids(log: &Log) -> Vec<EndpointId> {
+    log.members().keys().copied().collect()
 }
 
 #[derive(uniffi::Object)]
@@ -372,12 +388,41 @@ impl Warpshot {
         s: &mut nx::Session,
         log: &mut warpshot_core::log::Log,
     ) -> Result<(), WarpError> {
+        let before = member_ids(log);
         if s.sync_logs(log, now_ms()).await? {
-            let mut dev = self.dev.lock().await;
-            dev.log = Some(log.clone());
-            self.save(&dev).await?;
+            let me = {
+                let mut dev = self.dev.lock().await;
+                dev.log = Some(log.clone());
+                self.save(&dev).await?;
+                dev.id()
+            };
+            self.alert_added(me, &before, log);
         }
         Ok(())
+    }
+
+    /// §4.6: tells the app about every device in `log` that is new since
+    /// `before` and was added by another member.
+    fn alert_added(&self, me: EndpointId, before: &[EndpointId], log: &Log) {
+        let Some(o) = self.observer() else { return };
+        for (id, d) in log.members() {
+            if *id == me || before.contains(id) {
+                continue;
+            }
+            let signer = log
+                .records()
+                .iter()
+                .rev()
+                .find(|r| r.body.subject == *id && matches!(r.body.op, Op::Add(_)))
+                .map(|r| r.signer);
+            if signer == Some(me) {
+                continue;
+            }
+            let (by_id, by_name) = signer
+                .and_then(|s| log.members().get(&s).map(|m| (hex(&s.0), m.name.clone())))
+                .unwrap_or_default();
+            o.on_device_added(hex(&id.0), d.name.clone(), d.platform, by_id, by_name);
+        }
     }
 
     async fn save(&self, dev: &Device) -> Result<(), WarpError> {
@@ -390,9 +435,13 @@ impl Warpshot {
         let Some(mut log) = dev.log.clone() else {
             return Err(WarpError::NotPaired);
         };
+        let before = member_ids(&log);
         if net::server::pull(&self.client, &mut log, now_ms()).await? {
-            dev.log = Some(log);
+            dev.log = Some(log.clone());
             self.save(&dev).await?;
+            let me = dev.id();
+            drop(dev);
+            self.alert_added(me, &before, &log);
         }
         Ok(())
     }
@@ -769,6 +818,18 @@ impl Warpshot {
             .await
             .map_err(|_| WarpError::Storage)?
     }
+
+    /// "This wasn't me" (§4.6): removes device `id` with reason "not me".
+    pub async fn remove_device_not_me(self: Arc<Self>, id: String) -> Result<(), WarpError> {
+        let this = Arc::clone(&self);
+        self.rt
+            .spawn(async move {
+                let id = parse_id(&id)?;
+                this.append(id, Op::Remove(RemoveReason::NotMe)).await
+            })
+            .await
+            .map_err(|_| WarpError::Storage)?
+    }
 }
 
 impl Warpshot {
@@ -797,7 +858,37 @@ impl Warpshot {
             .map_err(|_| WarpError::Rejected)?;
         net::server::submit(&self.client, &[raw]).await?;
         dev.log = Some(log);
-        self.save(&dev).await
+        self.save(&dev).await?;
+        drop(dev);
+        self.announce_group_change().await;
+        Ok(())
+    }
+
+    /// §4.6: every other member hears about our membership change at once
+    /// (PCs also get it over their WebSocket; other phones only this way).
+    async fn announce_group_change(&self) {
+        let (gid, envs) = {
+            let dev = self.dev.lock().await;
+            let me = dev.id();
+            let targets: Vec<EndpointId> = dev
+                .log
+                .as_ref()
+                .map(|l| l.members().keys().copied().filter(|id| *id != me).collect())
+                .unwrap_or_default();
+            let envs: Vec<(EndpointId, Vec<u8>)> = targets
+                .into_iter()
+                .filter_map(|t| {
+                    flow::group_changed_wake(&dev, &t, now_ms())
+                        .ok()
+                        .map(|e| (t, e))
+                })
+                .collect();
+            (dev.group_id(), envs)
+        };
+        let Some(gid) = gid else { return };
+        for (t, env) in envs {
+            let _ = self.client.wake(&gid, &t, &env, 60).await;
+        }
     }
 
     async fn device_id_impl(&self) -> String {

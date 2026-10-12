@@ -245,7 +245,7 @@ open class ShareActivity : ComponentActivity() {
 
     private suspend fun prepareAndSend(intent: Intent) {
         val core = withContext(Dispatchers.IO) { Core.get(this@ShareActivity) }
-        val list = core?.let { c -> runCatching { c.devices() }.getOrNull() }.orEmpty().filter { !it.me }
+        val list = core?.let { c -> runCatching { c.devices() }.getOrNull() }.orEmpty().let(Core::pcs)
         if (list.isEmpty()) {
             stage = ShareStage.Ended(false, getString(R.string.pair_first_open), openApp = true)
             return

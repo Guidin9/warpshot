@@ -89,10 +89,10 @@ connection (`docs/dev-setup.md`).
 | Id | Task | Acceptance |
 |---|---|---|
 | A1 ✓ | Gradle project; Rust core via `cargo-ndk` + UniFFI; Keystore bridge | debug build on the phone |
-| A2 | Onboarding: QR scan, pairing confirmation, notification permission, battery guidance | pairs with warpctl and with the agent |
+| A2 ✓ | Onboarding: QR scan, pairing confirmation, notification permission, battery guidance | pairs with warpctl and with the agent |
 | A3 | FCM → `TransferService` (dataSync FGS) → receive → outputs (MediaStore, clipboard, notification, history) | delivery in Doze, < 3 s on Wi-Fi |
-| A4 | `ShareActivity` + sharing shortcuts (the PC appears directly in the share sheet) | share an image from Gallery → PC clipboard |
-| A5 | Devices (presence), settings, history; group alerts with "This wasn't me" | the alert appears when warpctl adds a device |
+| A4 ✓ | `ShareActivity` + sharing shortcuts (the PC appears directly in the share sheet) | share an image from Gallery → PC clipboard |
+| A5 ✓ | Devices (presence), settings, history; group alerts with "This wasn't me" | the alert appears when warpctl adds a device |
 
 ### End-to-end and personal release
 
@@ -284,6 +284,23 @@ path, NAT, port mapping, endpoint, membership log).
     and numbers: spikes.md "Android bind hang". Re-check the patch on every
     iroh upgrade. Real-phone check pending (the S21 FE never showed it so far,
     but the race is timing-dependent).
+13. ✓ **"New device" alert on the phone (2026-10-12, protocol §4.6).** The
+    phone now alerts like the PC when another member adds a device: a
+    high-priority notification and, in the app, a dialog with "This wasn't
+    me" (removes the device with reason "not me", and optionally the device
+    that added it as lost or stolen) or "It was me". The core reports every
+    device that is new in a pulled or synced log and wasn't added by this
+    phone (FFI `TransferObserver.on_device_added`,
+    `Warpshot.remove_device_not_me`). Found on the way: no one sent the
+    `group-changed` wake, so a phone learned about a new device only at the
+    next app start or transfer; the agent and the phone now send it to the
+    other members after each membership change. Also: the phone listed other
+    phones as send targets ("PCs"); targets are now non-Android devices only.
+    Emulator check: a simulated phone paired with the test PC while the app
+    was closed; the woken app alerted within 2 s ("“Sim Phone” (Android) was
+    added by MERTPC."), the dialog in Turkish, "This wasn't me" removed it
+    from the group (gone from the PC's device list). Open: the PC's alert
+    doesn't offer removing the adder yet.
 
 ## Security testing (attack our own app) — before wider use
 

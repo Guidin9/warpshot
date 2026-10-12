@@ -1445,6 +1445,8 @@ impl Service {
         if let Some(h) = self.ws.lock().await.as_ref() {
             let _ = h.presence().await;
         }
+        // The new device has the log already; the others hear about it now.
+        self.announce_group_change(Some(paired.peer)).await;
         self.refresh_menu().await;
         let st = self.status().await;
         self.emit("status", st);
@@ -1488,7 +1490,38 @@ impl Service {
             .map_err(|e| fail(net_code(&e)))?;
         dev.log = Some(log);
         self.save(&dev);
+        drop(dev);
+        self.announce_group_change(None).await;
         Ok(())
+    }
+
+    /// §4.6: every other member learns about a membership change at once. A
+    /// `group-changed` wake makes a phone pull the log and raise the alert
+    /// itself (it has no WebSocket that would bring the change otherwise).
+    async fn announce_group_change(&self, skip: Option<EndpointId>) {
+        let targets: Vec<EndpointId> = {
+            let dev = self.dev.lock().await;
+            let me = dev.id();
+            dev.log
+                .as_ref()
+                .map(|l| {
+                    l.members()
+                        .keys()
+                        .copied()
+                        .filter(|id| *id != me && Some(*id) != skip)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        for t in targets {
+            let env = {
+                let dev = self.dev.lock().await;
+                flow::group_changed_wake(&dev, &t, now_ms())
+            };
+            if let Ok(env) = env {
+                let _ = self.wake(&t, &env).await;
+            }
+        }
     }
 
     // ------------------------------------------------------------ IPC

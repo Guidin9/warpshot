@@ -183,4 +183,15 @@
     <string name="set_ask_never_desc">Files of any size are received without asking.</string>
     <string name="set_ask_q">Ask before receiving files larger than</string>
     <string name="change">Change</string>
+    <string name="channel_alerts">Security alerts</string>
+    <string name="alert_title">New device in your Warpshot group</string>
+    <string name="alert_text">“%1$s” (%2$s) was added by %3$s.</string>
+    <string name="alert_text_unknown">“%1$s” (%2$s) was added to your group.</string>
+    <string name="alert_not_me">This wasn\'t me</string>
+    <string name="alert_was_me">It was me</string>
+    <string name="alert_body">If you didn\'t add it, remove it now: it loses access to your devices at once.</string>
+    <string name="alert_also_adder">Also remove %1$s, which added it</string>
+    <string name="platform_windows">Windows</string>
+    <string name="platform_android">Android</string>
+    <string name="platform_other">other</string>
 </resources>

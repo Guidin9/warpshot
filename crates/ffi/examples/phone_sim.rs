@@ -65,6 +65,15 @@ impl TransferObserver for Printer {
     fn on_path(&self, _incoming: bool, _ms: u64, _note: String) {}
     fn on_route(&self, _incoming: bool, _direct: bool, _slow: bool, _ms: u64) {}
     fn on_ask_large(&self, _transfer: u64, _count: u32, _total: u64, _name: String) {}
+    fn on_device_added(
+        &self,
+        _id: String,
+        _name: String,
+        _platform: u64,
+        _by_id: String,
+        _by_name: String,
+    ) {
+    }
 }
 
 fn main() {

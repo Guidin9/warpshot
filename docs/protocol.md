@@ -439,6 +439,10 @@ The recipient MUST, in order:
 - `connect`: within 10 s, dial `sender` at `dial` with ALPN `warpshot/xfer/1`
   and present `session` (§8.3). On Android, start the foreground service first.
 - `group-changed`: sync the log from the server, validate it, and raise alerts (§4.6).
+  The member that appends a record (pairing, rename, remove) sends one to every
+  other member right after the server accepted it: phones have no WebSocket
+  that would bring the change. A member that skips it delays the alert only
+  until the next log sync (app start, any transfer).
 
 ## 8. Transfer protocol (ALPN `warpshot/xfer/1`)
 

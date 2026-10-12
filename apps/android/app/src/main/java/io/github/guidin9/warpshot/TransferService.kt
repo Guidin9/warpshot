@@ -469,6 +469,7 @@ object Notifier {
     private const val CH_PROGRESS = "progress"
     private const val CH_CONNECTION = "connection"
     private const val CH_ASK = "ask"
+    private const val CH_ALERT = "alerts"
     private val nextId = AtomicInteger(100)
     /** Notification ids of open questions, by transfer id. */
     private val asks = java.util.concurrent.ConcurrentHashMap<Long, Int>()
@@ -487,6 +488,9 @@ object Notifier {
         )
         nm.createNotificationChannel(
             NotificationChannel(CH_CONNECTION, ctx.getString(R.string.channel_connection), NotificationManager.IMPORTANCE_DEFAULT),
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(CH_ALERT, ctx.getString(R.string.channel_alerts), NotificationManager.IMPORTANCE_HIGH),
         )
         // High: the question pops up, since the sender waits for the answer.
         nm.createNotificationChannel(
@@ -522,6 +526,34 @@ object Notifier {
             nid,
         )
     }
+
+    /** A device someone else added (§4.6); one notification per device, kept until handled. */
+    fun deviceAdded(ctx: Context, alert: DeviceAlert) {
+        val open = PendingIntent.getActivity(
+            ctx,
+            alert.id.hashCode(),
+            GroupAlerts.intent(ctx, alert),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        post(
+            ctx,
+            NotificationCompat.Builder(ctx, CH_ALERT)
+                .setSmallIcon(R.drawable.ic_notify)
+                .setCategory(NotificationCompat.CATEGORY_STATUS)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setContentTitle(ctx.getString(R.string.alert_title))
+                .setContentText(alertText(ctx, alert))
+                .setStyle(NotificationCompat.BigTextStyle().bigText(alertText(ctx, alert) + "\n" + ctx.getString(R.string.alert_body)))
+                .setContentIntent(open)
+                .addAction(0, ctx.getString(R.string.alert_not_me), open),
+            alertId(alert.id),
+        )
+    }
+
+    fun clearAlert(ctx: Context, id: String) = NotificationManagerCompat.from(ctx).cancel(alertId(id))
+
+    /** Stable per device, away from the counter-based ids. */
+    private fun alertId(deviceId: String) = 0x40000000 or (deviceId.hashCode() and 0x3fffffff)
 
     fun clearAsk(ctx: Context, id: Long) {
         val nid = asks.remove(id) ?: return

@@ -102,7 +102,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        GroupAlerts.fromIntent(intent)?.let(GroupAlerts::add)
         setContent { WarpTheme { Surface(Modifier.fillMaxSize()) { MainScreen(mine) } } }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        GroupAlerts.fromIntent(intent)?.let(GroupAlerts::add)
     }
 
     override fun onStart() {
@@ -153,6 +159,8 @@ fun MainScreen(mine: MutableSet<Long>) {
     val historyTick by HistoryLog.changed.collectAsState()
     val pairing by Pairing.state.collectAsState()
     val transfers by Transfers.state.collectAsState()
+    val alerts by GroupAlerts.state.collectAsState()
+    var alertBusy by remember { mutableStateOf(false) }
     val focus = LocalFocusManager.current
 
     suspend fun refresh() {
@@ -200,7 +208,7 @@ fun MainScreen(mine: MutableSet<Long>) {
         onPauseOrDispose { job.cancel() }
     }
 
-    val pcs = devices.orEmpty().filter { !it.me }
+    val pcs = Core.pcs(devices.orEmpty())
     val paired = pcs.isNotEmpty()
     LaunchedEffect(paired) {
         if (paired) Push.ensureRegistered(ctx)
@@ -329,6 +337,35 @@ fun MainScreen(mine: MutableSet<Long>) {
         openSettings = { screen = "settings" },
         openEntry = { e -> HistoryUi.open(ctx, e)?.let { m -> scope.launch { snackbar.showSnackbar(m) } } },
     )
+
+    // §4.6: a device someone else added, until the user says it was them or removes it.
+    val alert = alerts.firstOrNull()
+    if (alert != null && !devices.isNullOrEmpty()) {
+        DeviceAlertDialog(
+            alert,
+            alertBusy,
+            onNotMe = { alsoAdder ->
+                scope.launch {
+                    alertBusy = true
+                    val core = withContext(Dispatchers.IO) { Core.get(ctx) }
+                    val err = runCatching {
+                        if (core == null) throw uniffi.warpshot_ffi.WarpException.NotPaired()
+                        core.removeDeviceNotMe(alert.id)
+                        if (alsoAdder) core.removeDevice(alert.byId, true)
+                    }.exceptionOrNull()
+                    alertBusy = false
+                    if (err == null) {
+                        GroupAlerts.dismiss(ctx, alert.id)
+                        snackbar.showSnackbar(ctx.getString(R.string.removed, alert.name))
+                        refresh()
+                    } else {
+                        snackbar.showSnackbar(errorText(ctx, err))
+                    }
+                }
+            },
+            onWasMe = { GroupAlerts.dismiss(ctx, alert.id) },
+        )
+    }
 
     when {
         devices == null -> {}

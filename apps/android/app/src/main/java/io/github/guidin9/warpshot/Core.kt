@@ -89,6 +89,14 @@ class CoreObserver(private val ctx: Context) : TransferObserver {
         Log.i("Warpshot", "transfer ${if (incoming) "in" else "out"} direct=$everDirect slow=$slow ms=$durationMs")
     }
 
+    /** Another member added a device (protocol §4.6): alert in the app and in a notification. */
+    override fun onDeviceAdded(id: String, name: String, platform: ULong, byId: String, byName: String) {
+        val alert = DeviceAlert(id, name, platform, byId, byName)
+        GroupAlerts.add(alert)
+        Log.i("Warpshot", "group alert: device added")
+        Notifier.deviceAdded(ctx, alert)
+    }
+
     /** Items above the receive limit: ask in the app and in a notification (protocol §8.4). */
     override fun onAskLarge(transfer: ULong, count: UInt, totalBytes: ULong, name: String) {
         val id = transfer.toLong()
@@ -149,6 +157,9 @@ object Core {
         prefs(ctx).edit().putString("server_url", url).apply()
         return instance ?: open(ctx, url)
     }
+
+    /** Where this phone can send: the other devices except phones (Android ⇄ Windows). */
+    fun pcs(devices: List<DeviceEntry>): List<DeviceEntry> = devices.filter { !it.me && it.platform != 2uL }
 
     /** The PC sends go to: the user's last choice if still paired, else the first PC. */
     fun target(ctx: Context, pcs: List<DeviceEntry>): DeviceEntry? {
