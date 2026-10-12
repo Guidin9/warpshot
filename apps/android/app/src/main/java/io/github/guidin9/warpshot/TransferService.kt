@@ -8,7 +8,6 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -390,14 +389,13 @@ object Receiver {
         }
         Transfers.finish(id, Outcome.Done)
         if (items.isEmpty()) return // e.g. a group-change wake
-        val clipboard = ctx.getSystemService(ClipboardManager::class.java)
         val copy = Prefs.copyOnReceive(ctx)
         val names = runCatching { core.devices() }.getOrNull().orEmpty().associate { it.id to it.name }
         for (item in items) {
             val sender = names[item.peer] ?: from
             if (item.kind == KIND_TEXT) {
                 val text = item.text ?: continue
-                if (copy) clipboard.setPrimaryClip(ClipData.newPlainText("Warpshot", text))
+                if (copy) Clip.put(ctx, ClipData.newPlainText("Warpshot", text))
                 Notifier.text(ctx, sender, text, copy)
                 HistoryLog.add(ctx, true, item.peer, Kind.TEXT, item.size.toLong(), true, text = text)
                 continue
@@ -413,7 +411,7 @@ object Receiver {
                 Notifier.failed(ctx, ctx.getString(R.string.couldnt_save, item.name))
                 continue
             }
-            if (image && copy) clipboard.setPrimaryClip(ClipData.newUri(ctx.contentResolver, "Warpshot", uri))
+            if (image && copy) Clip.put(ctx, ClipData.newUri(ctx.contentResolver, "Warpshot", uri))
             Notifier.saved(ctx, sender, item.name, uri, item.mime, image, copy)
         }
     }

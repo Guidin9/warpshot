@@ -307,8 +307,23 @@ path, NAT, port mapping, endpoint, membership log).
 
 Progress (2026-10-12): items 2–6, 8 and 9 done, 7 partly; results and fixes in
 `docs/threat-model.md` §6.1. Next:
-key-theft write-up (roadmap "Next session" 6), the rest of 7; then the
-phone-only checks (1 on the phone, 7 Keystore/rooted, 8 phone traffic).
+key-theft write-up (roadmap "Next session" 6), the rest of 7 (MobSF on the
+APK, Keystore extraction in a rooted emulator).
+
+**One batched phone session (user, 2026-10-12)** — everything that needs the
+real phone, so it is connected once (~30–40 min, user hands-on ~3 min):
+install the new build (`adb install -r`, data kept); large-file prompt
+(decline, then accept); share-sheet PC row; Quick Settings tile (added with
+`cmd statusbar add-tile`, removed afterwards); Doze (`deviceidle force-idle`)
+and standby buckets, restored afterwards; 5 PC → phone wakes in a row (JNI
+default-route fix); item 1 on the phone: the app's sockets at idle and during
+a transfer, a stray UDP packet gets no answer; appops / standby bucket /
+batterystats read-only; force-stop mid-receive → partials swept; clipboard
+marked sensitive (phone) and kept out of the cloud clipboard (PC: check the
+`CanUploadToCloudClipboard` format after a phone → PC text); the user shares a
+gallery photo (thumbnail preview). Delete every test item on both devices.
+Before it: install the new agent and measure idle (`measure-idle.ps1
+-WarmupSeconds 150`). Later phone needs only: Faz 3 store build, own relay.
 
 Mode (user, 2026-10-10): as aggressive as possible, white-box, against our
 own targets only: the user's PC and phone, our Worker, our Firebase project.

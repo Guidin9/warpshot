@@ -130,6 +130,16 @@ fn drop_effect_format() -> u32 {
     unsafe { RegisterClipboardFormatW(name.as_ptr()) }
 }
 
+/// Marks what we put on the clipboard as not for Windows' cloud clipboard
+/// ("Sync across your devices" would upload it to the user's Microsoft
+/// account): received content leaves the PC only end-to-end encrypted. The
+/// local clipboard history (Win+V) still keeps it.
+fn no_cloud_format() -> u32 {
+    let name = wide("CanUploadToCloudClipboard");
+    // SAFETY: as above.
+    unsafe { RegisterClipboardFormatW(name.as_ptr()) }
+}
+
 fn available(fmt: u32) -> bool {
     // SAFETY: no preconditions; works without opening the clipboard.
     fmt != 0 && unsafe { IsClipboardFormatAvailable(fmt) } != 0
@@ -349,6 +359,10 @@ fn replace(hwnd: HWND, items: &[(u32, &[u8])]) -> Result<(), ClipError> {
     for (fmt, bytes) in items {
         set(*fmt, bytes)?;
     }
+    let no_cloud = no_cloud_format();
+    if no_cloud != 0 {
+        set(no_cloud, &0u32.to_le_bytes())?;
+    }
     Ok(())
 }
 
@@ -465,5 +479,9 @@ mod tests {
         write_files(w.0, &files).unwrap();
         assert_eq!(available_kind(), Some(ClipKind::Files));
         assert_eq!(read(w.0).unwrap(), Some(ClipContent::Files(files)));
+        assert!(
+            available(no_cloud_format()),
+            "kept out of the cloud clipboard"
+        );
     }
 }

@@ -1,7 +1,10 @@
 package io.github.guidin9.warpshot
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.os.PersistableBundle
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
@@ -34,6 +37,22 @@ object Prefs {
 
     /** The choices the settings offer, in MB (0 = never ask). */
     val ASK_CHOICES = listOf(100, 500, 1000, 2000, 0)
+}
+
+/**
+ * Puts received content on the clipboard marked sensitive: Android 13+ hides
+ * it in the copy preview, and keyboards (some sync their clipboard history to
+ * an online account) leave it out of their history. Received content leaves
+ * the phone only end-to-end encrypted (docs/threat-model.md 6.1, item 7).
+ */
+object Clip {
+    // ClipDescription.EXTRA_IS_SENSITIVE (API 33); older versions ignore it.
+    private const val IS_SENSITIVE = "android.content.extra.IS_SENSITIVE"
+
+    fun put(ctx: Context, clip: ClipData) {
+        clip.description.extras = PersistableBundle().apply { putBoolean(IS_SENSITIVE, true) }
+        ctx.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(clip)
+    }
 }
 
 /** Item kinds (protocol §8.4). */

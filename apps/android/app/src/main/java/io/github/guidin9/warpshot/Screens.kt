@@ -3,7 +3,6 @@ package io.github.guidin9.warpshot
 import android.app.DownloadManager
 import android.app.StatusBarManager
 import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -163,7 +162,7 @@ object HistoryUi {
     fun open(ctx: Context, e: HistoryEntry): String? {
         if (e.kind == Kind.TEXT) {
             val text = e.text ?: return null
-            ctx.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("Warpshot", text))
+            Clip.put(ctx, ClipData.newPlainText("Warpshot", text))
             return ctx.getString(R.string.copied_toast)
         }
         val uri = e.uri ?: return null
