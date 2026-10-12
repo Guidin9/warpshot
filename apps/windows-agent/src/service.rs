@@ -25,7 +25,8 @@ use warpshot_core::{
     log::{Head, Op, RecordBody, RemoveReason, platform, sign_record},
     net::{
         self, NetError, Relay,
-        flow::{self, PendingSessions, WakeAction},
+        dispatch::Dispatcher,
+        flow::{self, WakeAction},
         manager::EndpointManager,
         pair::PeerSummary,
         store::{Device, now_ms, write_atomic},
@@ -257,7 +258,8 @@ pub struct Service {
     server_url: Option<String>,
     mgr: Arc<EndpointManager>,
     replay: Mutex<ReplayCache>,
-    pending: Mutex<PendingSessions>,
+    /// The one accept loop on the endpoint (sends and pairing).
+    disp: Arc<Dispatcher>,
     send_lock: Mutex<()>,
     ws: Mutex<Option<WsHandle>>,
     acks: Mutex<HashMap<u64, oneshot::Sender<Result<Via, String>>>>,
@@ -409,7 +411,7 @@ impl Service {
             server_url,
             mgr,
             replay: Mutex::new(ReplayCache::default()),
-            pending: Mutex::new(PendingSessions::default()),
+            disp: Dispatcher::new(),
             send_lock: Mutex::new(()),
             ws: Mutex::new(None),
             acks: Mutex::new(HashMap::new()),
@@ -1263,20 +1265,19 @@ impl Service {
             g = self.send_lock.lock() => g,
             () = cancel.cancelled() => return Err("cancelled".into()),
         };
-        let (ep, _lease) = self.mgr.acquire().await.map_err(|e| net_code(&e))?;
-        let (env, log, session) = {
+        let (ep, lease) = self.mgr.acquire().await.map_err(|e| net_code(&e))?;
+        let (env, log, mut wait) = {
             let dev = self.dev.lock().await;
-            let session = self
-                .pending
-                .lock()
-                .await
-                .insert(target, items.clone())
+            let log = dev.log.clone().ok_or("not-paired")?;
+            let wait = self
+                .disp
+                .expect(&ep, target, &log)
                 .map_err(|e| net_code(&e))?;
             (
-                flow::connect_wake(&ep, &dev, &target, session, &items, now_ms())
+                flow::connect_wake(&ep, &dev, &target, wait.session(), &items, now_ms())
                     .map_err(|e| net_code(&e))?,
-                dev.log.clone().ok_or("not-paired")?,
-                session,
+                log,
+                wait,
             )
         };
         let via = self.wake(&target, &env).await?;
@@ -1286,83 +1287,70 @@ impl Service {
         let deadline = tokio::time::Instant::now()
             .checked_add(flow::PENDING_TTL)
             .ok_or("time")?;
-        loop {
-            let inc = tokio::select! {
-                r = tokio::time::timeout_at(deadline, ep.accept()) => {
-                    r.map_err(|_| "no-answer")?.ok_or("no-answer")?
-                }
-                () = cancel.cancelled() => {
-                    // The woken device may still dial in; it finds no session.
-                    self.pending.lock().await.take(&session, &target);
-                    return Err("cancelled".into());
-                }
-            };
-            let Ok(acc) = inc.accept() else { continue };
-            let Ok(conn) = acc.await else { continue };
-            if conn.alpn() != wx::ALPN {
-                net::close(&conn, wx::code::PROTOCOL);
-                continue;
-            }
-            let Ok(mut s) = nx::accept(&ep, conn, &log).await else {
-                continue;
-            };
-            let Some(p) = self.pending.lock().await.take(&s.hello_session, &s.peer) else {
-                net::close(&s.conn, wx::code::PROTOCOL);
-                continue;
-            };
-            s.cancel_with(&cancel);
-            let this = Arc::clone(self);
-            s.on_progress(move |p| this.on_progress(n, p));
-            // §8.5: both peers run the log sync step before any transfer.
-            let mut synced = log.clone();
-            if s.sync_logs(&mut synced, now_ms())
-                .await
-                .map_err(|e| net_code(&e))?
-            {
-                let mut dev = self.dev.lock().await;
-                dev.log = Some(synced);
-                self.save(&dev);
-            }
-            let sent: Vec<Item> = p.items.iter().map(|o| o.item.clone()).collect();
-            let conn = s.conn.clone();
-            let t0 = Instant::now();
-            let (results, route) = net::with_path_notes(
+        // The woken device dials in with our session; the dispatcher hands it over.
+        let got = tokio::select! {
+            r = tokio::time::timeout_at(deadline, wait.arrived()) => Some(r),
+            () = cancel.cancelled() => None,
+        };
+        let Some(got) = got else {
+            // A late dial is answered with CANCELLED until the session would have
+            // expired, so the woken device doesn't report a failure (§9).
+            wait.cancel(deadline, lease);
+            return Err("cancelled".into());
+        };
+        let mut s = got.map_err(|_| "no-answer")?.map_err(|_| "no-answer")?;
+        s.cancel_with(&cancel);
+        let this = Arc::clone(self);
+        s.on_progress(move |p| this.on_progress(n, p));
+        // §8.5: both peers run the log sync step before any transfer.
+        let mut synced = log.clone();
+        if s.sync_logs(&mut synced, now_ms())
+            .await
+            .map_err(|e| net_code(&e))?
+        {
+            let mut dev = self.dev.lock().await;
+            dev.log = Some(synced);
+            self.save(&dev);
+        }
+        let sent: Vec<Item> = items.iter().map(|o| o.item.clone()).collect();
+        let conn = s.conn.clone();
+        let t0 = Instant::now();
+        let (results, route) = net::with_path_notes(
+            &conn,
+            net::watch_route(
                 &conn,
-                net::watch_route(
-                    &conn,
-                    net::SLOW_ROUTE_AFTER,
-                    tokio::time::timeout(Duration::from_secs(3600), s.send_items(p.items)),
-                    || self.slow_route("out"),
-                ),
-                |note| self.path_note(n, "out", t0, &note),
-            )
-            .await;
-            self.count_route(route);
-            let results = results.map_err(|_| "timeout")?.map_err(|e| net_code(&e))?;
-            if let Some(mut h) = self.history_store().await {
-                let keep = self.retention();
-                for it in &sent {
-                    let ok = results.iter().any(|(id, ok)| *id == it.id && *ok);
-                    let _ = h.add(
-                        now_ms(),
-                        Direction::Out,
-                        &target,
-                        it.kind,
-                        it.size,
-                        ok,
-                        Some(it.name.as_str()).filter(|n| !n.is_empty()),
-                        None,
-                        it.text.as_deref(),
-                        keep,
-                    );
-                }
+                net::SLOW_ROUTE_AFTER,
+                tokio::time::timeout(Duration::from_secs(3600), s.send_items(items)),
+                || self.slow_route("out"),
+            ),
+            |note| self.path_note(n, "out", t0, &note),
+        )
+        .await;
+        self.count_route(route);
+        let results = results.map_err(|_| "timeout")?.map_err(|e| net_code(&e))?;
+        if let Some(mut h) = self.history_store().await {
+            let keep = self.retention();
+            for it in &sent {
+                let ok = results.iter().any(|(id, ok)| *id == it.id && *ok);
+                let _ = h.add(
+                    now_ms(),
+                    Direction::Out,
+                    &target,
+                    it.kind,
+                    it.size,
+                    ok,
+                    Some(it.name.as_str()).filter(|n| !n.is_empty()),
+                    None,
+                    it.text.as_deref(),
+                    keep,
+                );
             }
-            self.emit("history.changed", json!({}));
-            return if results.iter().all(|(_, ok)| *ok) {
-                Ok(target)
-            } else {
-                Err("rejected".into())
-            };
+        }
+        self.emit("history.changed", json!({}));
+        if results.iter().all(|(_, ok)| *ok) {
+            Ok(target)
+        } else {
+            Err("rejected".into())
         }
     }
 
@@ -1426,19 +1414,10 @@ impl Service {
     ) -> Result<EndpointId, NetError> {
         let deadline =
             Duration::from_secs(window.expires_at_secs().saturating_sub(now_ms() / 1000));
-        let conn = tokio::time::timeout(deadline, async {
-            loop {
-                let inc = ep.accept().await.ok_or(NetError::Bind)?;
-                let Ok(acc) = inc.accept() else { continue };
-                let Ok(conn) = acc.await else { continue };
-                if conn.alpn() == warpshot_core::pair::ALPN {
-                    return Ok::<_, NetError>(conn);
-                }
-                net::close(&conn, wx::code::PROTOCOL);
-            }
-        })
-        .await
-        .map_err(|_| NetError::Timeout)??;
+        let conn = tokio::time::timeout(deadline, self.disp.expect_pairing(ep))
+            .await
+            .map_err(|_| NetError::Timeout)?
+            .map_err(|_| NetError::Bind)?;
         let ask = Arc::clone(self);
         let sub = Arc::clone(self);
         let paired = net::pair::display(

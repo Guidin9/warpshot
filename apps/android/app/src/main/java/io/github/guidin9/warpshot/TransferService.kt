@@ -22,6 +22,7 @@ import android.os.IBinder
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.text.format.Formatter
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
@@ -373,9 +374,11 @@ object Receiver {
             Transfers.finish(id, Outcome.Failed(errorText(ctx, e)))
             return // not a wake we accept (replay, stale, not a member): stay silent
         } catch (_: WarpException.Cancelled) {
+            Log.i("Warpshot", "receive cancelled")
             Transfers.finish(id, Outcome.Cancelled)
             return // cancelled here or on the PC: nothing to report
         } catch (e: Exception) {
+            Log.i("Warpshot", "receive failed ${e.javaClass.simpleName}")
             Transfers.finish(id, Outcome.Failed(errorText(ctx, e)))
             Notifier.failed(ctx, errorText(ctx, e))
             return

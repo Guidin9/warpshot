@@ -970,3 +970,119 @@ async fn a_slow_answer_is_still_accepted() {
     assert_eq!(r.sent.unwrap(), vec![(2, true)]);
     assert_eq!(r.kept.len(), 1);
 }
+
+/// What the woken phone sees when it answers a wake with `session`: the dial,
+/// the log sync and the receive (as the app runs them).
+async fn answer_wake(
+    ep_phone: &iroh::Endpoint,
+    phone: &Device,
+    pc: &Device,
+    pc_addr: &warpshot_core::wake::DialInfo,
+    session: [u8; 16],
+) -> Result<Vec<nx::Received>, net::NetError> {
+    let mut log = phone.log.clone().unwrap();
+    let mut s = net::flow::answer_connect(ep_phone, &log, &pc.id(), session, pc_addr).await?;
+    s.sync_logs(&mut log, now_ms()).await?;
+    let policy = Policy {
+        dir: tmpdir("disp"),
+        max_size: 1 << 30,
+        accept_large: false,
+    };
+    s.receive(&policy, |_| true).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dispatcher_routes_and_answers_cancelled_sessions() {
+    use std::time::Duration;
+    use tokio::time::Instant;
+    use warpshot_core::net::dispatch::Dispatcher;
+
+    let (pc, phone) = paired_pc_and_phone().await;
+    let (pc, phone) = (std::sync::Arc::new(pc), std::sync::Arc::new(phone));
+    let ep_pc = net::bind(&pc.keys.ik, Relay::Disabled).await.unwrap();
+    let ep_phone = net::bind(&phone.keys.ik, Relay::Disabled).await.unwrap();
+    let pc_log = pc.log.clone().unwrap();
+    let pc_addr = net::dial_info(&ep_pc);
+    let disp = Dispatcher::new();
+    let is_cancelled =
+        |r: &Result<Vec<nx::Received>, net::NetError>| matches!(r, Err(net::NetError::Cancelled));
+
+    // A waiting send gets the connection that presents its session.
+    let mut w = disp.expect(&ep_pc, phone.id(), &pc_log).unwrap();
+    let session = w.session();
+    let (got, sent) = tokio::join!(
+        answer_wake(&ep_phone, &phone, &pc, &pc_addr, session),
+        async {
+            let mut s = w.arrived().await.unwrap();
+            s.sync_logs(&mut pc_log.clone(), now_ms()).await.unwrap();
+            s.send_items(vec![nx::text_item(1, "merhaba", now_ms()).unwrap()])
+                .await
+        }
+    );
+    assert_eq!(sent.unwrap(), vec![(1, true)]);
+    assert_eq!(got.unwrap()[0].item.text.as_deref(), Some("merhaba"));
+
+    // Cancelled while waiting: a late dial ends as a cancel on the phone.
+    let w = disp.expect(&ep_pc, phone.id(), &pc_log).unwrap();
+    let session = w.session();
+    w.cancel(Instant::now() + Duration::from_secs(10), ());
+    let r = answer_wake(&ep_phone, &phone, &pc, &pc_addr, session).await;
+    assert!(is_cancelled(&r), "late dial after a cancel: {r:?}");
+
+    // Cancelled after the dial arrived but before the send took it.
+    let w = disp.expect(&ep_pc, phone.id(), &pc_log).unwrap();
+    let session = w.session();
+    let late = tokio::spawn({
+        let (ep_phone, phone, pc, pc_addr) =
+            (ep_phone.clone(), phone.clone(), pc.clone(), pc_addr.clone());
+        async move { answer_wake(&ep_phone, &phone, &pc, &pc_addr, session).await }
+    });
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    w.cancel(Instant::now() + Duration::from_secs(10), ());
+    let r = late.await.unwrap();
+    assert!(is_cancelled(&r), "dial already arrived, then cancel: {r:?}");
+
+    // An unknown session, a withdrawn one and an expired cancel are refused as protocol errors.
+    let r = answer_wake(&ep_phone, &phone, &pc, &pc_addr, [7; 16]).await;
+    assert!(r.is_err() && !is_cancelled(&r), "unknown session: {r:?}");
+    let w = disp.expect(&ep_pc, phone.id(), &pc_log).unwrap();
+    let session = w.session();
+    drop(w);
+    let r = answer_wake(&ep_phone, &phone, &pc, &pc_addr, session).await;
+    assert!(r.is_err() && !is_cancelled(&r), "withdrawn session: {r:?}");
+    let w = disp.expect(&ep_pc, phone.id(), &pc_log).unwrap();
+    let session = w.session();
+    w.cancel(Instant::now() + Duration::from_millis(200), ());
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let r = answer_wake(&ep_phone, &phone, &pc, &pc_addr, session).await;
+    assert!(r.is_err() && !is_cancelled(&r), "cancel expired: {r:?}");
+
+    // A pairing connection goes to the pairing window while a send waits, and
+    // the send still gets its own connection afterwards.
+    let mut w = disp.expect(&ep_pc, phone.id(), &pc_log).unwrap();
+    let pairing = disp.expect_pairing(&ep_pc);
+    let conn = net::connect(&ep_phone, &pc.id(), &pc_addr, warpshot_core::pair::ALPN)
+        .await
+        .unwrap();
+    let got_pair = tokio::time::timeout(Duration::from_secs(10), pairing)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(got_pair.alpn(), warpshot_core::pair::ALPN);
+    conn.close(0u32.into(), b"");
+    let session = w.session();
+    let (got, sent) = tokio::join!(
+        answer_wake(&ep_phone, &phone, &pc, &pc_addr, session),
+        async {
+            let mut s = w.arrived().await.unwrap();
+            s.sync_logs(&mut pc_log.clone(), now_ms()).await.unwrap();
+            s.send_items(vec![nx::text_item(1, "ikinci", now_ms()).unwrap()])
+                .await
+        }
+    );
+    assert_eq!(sent.unwrap(), vec![(1, true)]);
+    assert_eq!(got.unwrap()[0].item.text.as_deref(), Some("ikinci"));
+
+    ep_pc.close().await;
+    ep_phone.close().await;
+}

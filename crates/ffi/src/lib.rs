@@ -15,7 +15,8 @@ use warpshot_core::{
     log::{Op, RecordBody, RemoveReason, platform, sign_record},
     net::{
         self, NetError, Relay,
-        flow::{self, PendingSessions, WakeAction},
+        dispatch::Dispatcher,
+        flow::{self, WakeAction},
         manager::EndpointManager,
         store::{Device, now_ms},
         xfer::{self as nx, Cancel, OutItem, Policy, Source},
@@ -219,7 +220,8 @@ pub struct Warpshot {
     client: Client,
     mgr: Arc<EndpointManager>,
     replay: Mutex<ReplayCache>,
-    pending: Mutex<PendingSessions>,
+    /// The one accept loop on the endpoint (protocol §9 "Pending sessions").
+    disp: Arc<Dispatcher>,
     observer: std::sync::Mutex<Option<Arc<dyn TransferObserver>>>,
     /// Running transfers by the app's id, for [`Warpshot::cancel_transfer`].
     active: Arc<std::sync::Mutex<HashMap<u64, Cancel>>>,
@@ -436,7 +438,7 @@ impl Warpshot {
             client,
             mgr,
             replay: Mutex::new(ReplayCache::default()),
-            pending: Mutex::new(PendingSessions::default()),
+            disp: Dispatcher::new(),
             observer: std::sync::Mutex::new(None),
             active: Arc::default(),
             asks: Arc::default(),
@@ -1006,78 +1008,72 @@ impl Warpshot {
         let t = Tracked::new(&self.active, transfer);
         // Cancel works from the start, not only once the peer dials in: a slow
         // bind or server call must not leave the send stuck at "Waiting".
-        let (ep, _lease) = tokio::select! {
+        let (ep, lease) = tokio::select! {
             r = tokio::time::timeout(BIND_TIMEOUT, self.mgr.acquire()) => r.map_err(|_| bind_timed_out())??,
             () = t.cancel.cancelled() => return Err(WarpError::Cancelled),
         };
-        let (env, gid, log, session) = {
+        let (env, gid, log, mut wait) = {
             let dev = self.dev.lock().await;
             let gid = dev.group_id().ok_or(WarpError::NotPaired)?;
-            let session = self.pending.lock().await.insert(target, items.clone())?;
+            let log = dev.log.clone().ok_or(WarpError::NotPaired)?;
+            let wait = self.disp.expect(&ep, target, &log)?;
             (
-                flow::connect_wake(&ep, &dev, &target, session, &items, now_ms())?,
+                flow::connect_wake(&ep, &dev, &target, wait.session(), &items, now_ms())?,
                 gid,
-                dev.log.clone().ok_or(WarpError::NotPaired)?,
-                session,
+                log,
+                wait,
             )
         };
-        let via = tokio::select! {
-            r = self.client.wake(&gid, &target, &env, 60) => r.map_err(|e| WarpError::Server {
-                code: e.to_string(),
-            })?,
-            () = t.cancel.cancelled() => {
-                self.pending.lock().await.take(&session, &target);
-                return Err(WarpError::Cancelled);
-            }
-        };
-        if via == warpshot_core::client::Via::None {
-            return Err(WarpError::Offline);
-        }
-        // Wait for the woken device to dial in with our session.
+        // Wait for the woken device to dial in with our session (the dispatcher
+        // hands it over). A cancel from here on may race the wake-up, so a late
+        // dial is answered with CANCELLED until the session would have expired.
         let deadline = tokio::time::Instant::now()
             .checked_add(flow::PENDING_TTL)
             .ok_or(WarpError::Invalid)?;
-        loop {
-            let inc = tokio::select! {
-                r = tokio::time::timeout_at(deadline, ep.accept()) => {
-                    r.map_err(|_| WarpError::Offline)?.ok_or(WarpError::Offline)?
-                }
-                () = t.cancel.cancelled() => {
-                    self.pending.lock().await.take(&session, &target);
-                    return Err(WarpError::Cancelled);
-                }
-            };
-            let Ok(acc) = inc.accept() else { continue };
-            let Ok(conn) = acc.await else { continue };
-            if conn.alpn() != warpshot_core::xfer::ALPN {
-                net::close(&conn, warpshot_core::xfer::code::PROTOCOL);
-                continue;
-            }
-            let mut s = nx::accept(&ep, conn, &log).await?;
-            let Some(p) = self.pending.lock().await.take(&s.hello_session, &s.peer) else {
-                net::close(&s.conn, warpshot_core::xfer::code::PROTOCOL);
-                continue;
-            };
-            self.instrument(&mut s, &t, false);
-            // §8.5: both peers run the log sync step before any transfer.
-            let mut synced = log.clone();
-            self.sync_session(&mut s, &mut synced).await?;
-            let conn = s.conn.clone();
-            let results = self
-                .observed(
-                    &conn,
-                    false,
-                    tokio::time::timeout(Duration::from_secs(3600), s.send_items(p.items)),
-                )
-                .await
-                .map_err(|_| WarpError::Network {
-                    code: warpshot_core::xfer::code::TIMEOUT,
-                })??;
-            return if results.iter().all(|(_, ok)| *ok) {
-                Ok(())
-            } else {
-                Err(WarpError::Rejected)
-            };
+        let via = tokio::select! {
+            r = self.client.wake(&gid, &target, &env, 60) => Some(r),
+            () = t.cancel.cancelled() => None,
+        };
+        let Some(via) = via else {
+            wait.cancel(deadline, lease);
+            return Err(WarpError::Cancelled);
+        };
+        let via = via.map_err(|e| WarpError::Server {
+            code: e.to_string(),
+        })?;
+        if via == warpshot_core::client::Via::None {
+            return Err(WarpError::Offline);
+        }
+        let got = tokio::select! {
+            r = tokio::time::timeout_at(deadline, wait.arrived()) => Some(r),
+            () = t.cancel.cancelled() => None,
+        };
+        let Some(got) = got else {
+            wait.cancel(deadline, lease);
+            return Err(WarpError::Cancelled);
+        };
+        let mut s = got
+            .map_err(|_| WarpError::Offline)?
+            .map_err(|_| WarpError::Offline)?;
+        self.instrument(&mut s, &t, false);
+        // §8.5: both peers run the log sync step before any transfer.
+        let mut synced = log.clone();
+        self.sync_session(&mut s, &mut synced).await?;
+        let conn = s.conn.clone();
+        let results = self
+            .observed(
+                &conn,
+                false,
+                tokio::time::timeout(Duration::from_secs(3600), s.send_items(items)),
+            )
+            .await
+            .map_err(|_| WarpError::Network {
+                code: warpshot_core::xfer::code::TIMEOUT,
+            })??;
+        if results.iter().all(|(_, ok)| *ok) {
+            Ok(())
+        } else {
+            Err(WarpError::Rejected)
         }
     }
 }

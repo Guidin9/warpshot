@@ -353,10 +353,12 @@ pub async fn dial(
         })
     }
     .await;
-    if let Err(e) = &res {
+    // A sender that cancelled while we were being woken closes right after the
+    // handshake with CANCELLED (§9 "Pending sessions"): report a cancel, not a failure.
+    res.map_err(|e| {
         close(&conn, e.close_code());
-    }
-    res
+        outcome(&conn, None, e)
+    })
 }
 
 /// Listener side for an accepted `warpshot/xfer/1` connection.

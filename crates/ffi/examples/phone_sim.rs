@@ -6,6 +6,9 @@
 //! phone_sim <dir> <server_url> send-text <target_hex> <text>
 //! phone_sim <dir> <server_url> send-file <target_hex> <path>
 //! phone_sim <dir> <server_url> send-file-cancel <target_hex> <path>   (cancels at the first progress report)
+//! phone_sim <dir> <server_url> send-text-cancel <target_hex> <text>   (cancels 300 ms in)
+//! phone_sim <dir> <server_url> send-text-cancel-stdin <target_hex> <text>   (cancels when a line
+//!     arrives on stdin, then stays up 8 s like the app, so a late dial from the woken PC is answered)
 //! phone_sim <dir> <server_url> devices
 //! ```
 
@@ -88,6 +91,7 @@ fn main() {
         .build()
         .unwrap();
     let w2 = Arc::clone(&w);
+    let stay = a[2] == "send-text-cancel-stdin";
     let res: Result<String, WarpError> = rt.block_on(async move {
         match a[2].as_str() {
             "pair" => w2.pair_scan(a[3].clone(), Arc::new(Yes)).await,
@@ -103,6 +107,17 @@ fn main() {
                 .send_files(a[3].clone(), vec![OutgoingFile { path: a[4].clone() }], 7)
                 .await
                 .map(|()| "sent".into()),
+            "send-text-cancel-stdin" => {
+                let w3 = Arc::clone(&w2);
+                std::thread::spawn(move || {
+                    let mut line = String::new();
+                    let _ = std::io::stdin().read_line(&mut line);
+                    println!("{{\"found\":{}}}", w3.cancel_transfer(9));
+                });
+                w2.send_text(a[3].clone(), a[4].clone(), 9)
+                    .await
+                    .map(|()| "sent".into())
+            }
             // Cancels 300 ms in, before the target could dial back.
             "send-text-cancel" => {
                 let w3 = Arc::clone(&w2);
@@ -125,6 +140,9 @@ fn main() {
         }
     });
     drop(rt);
+    if stay {
+        std::thread::sleep(std::time::Duration::from_secs(8));
+    }
     match res {
         Ok(s) => println!("{s}"),
         Err(e) => {

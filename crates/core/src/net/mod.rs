@@ -1,6 +1,7 @@
 //! iroh networking: endpoint configuration (§9), framing (§8.2), transfer
 //! sessions (§8) and pairing (§5).
 
+pub mod dispatch;
 pub mod flow;
 pub mod manager;
 pub mod pair;

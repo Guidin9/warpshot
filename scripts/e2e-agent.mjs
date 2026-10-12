@@ -12,6 +12,7 @@
 // clipboard writes are turned off so the test does not touch the desktop.
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -242,6 +243,41 @@ try {
     "phone cancel while waking: Cancelled at once",
     !early.ok && early.out.includes('"found":true') && early.out.includes("Cancelled") && early.ms < 4000,
     `${early.ms} ms, ${early.out.trim().split("\n").at(-1)}`,
+  );
+
+  // Cancel after the wake went out: the PC dials in late and must end quietly
+  // ("cancelled", no toast) instead of failing. A proxy in front of the server
+  // tells the phone to cancel once the server has pushed the wake to the PC,
+  // and holds the reply for 1 s, so the cancel lands while the PC dials.
+  const upstream = new URL(server);
+  let sim;
+  const slow = http.createServer((req, res) => {
+    const fwd = http.request({ host: upstream.hostname, port: upstream.port, path: req.url, method: req.method, headers: req.headers }, (r) => {
+      const isWake = req.method === "POST" && /\/wake$/.test(req.url ?? "");
+      if (isWake) sim?.stdin.write("cancel\n");
+      setTimeout(() => {
+        res.writeHead(r.statusCode ?? 502, r.headers);
+        r.pipe(res);
+      }, isWake ? 1000 : 0);
+    });
+    fwd.on("error", () => res.destroy());
+    req.pipe(fwd);
+  });
+  await new Promise((r) => slow.listen(0, "127.0.0.1", r));
+  const doneBefore = events.filter((e) => e.event === "transfer.done").length;
+  const late = await new Promise((resolve) => {
+    sim = spawn(exe("examples/phone_sim.exe"), [phoneDir, `http://127.0.0.1:${slow.address().port}`, "send-text-cancel-stdin", me, "cancelled after the wake"]);
+    let out = "";
+    sim.stdout.on("data", (d) => (out += d));
+    sim.stderr.on("data", (d) => (out += d));
+    sim.on("exit", (code) => resolve({ ok: code === 0, out }));
+  });
+  slow.close();
+  const lateDone = events.filter((e) => e.event === "transfer.done").slice(doneBefore);
+  check(
+    "phone cancel after the wake: PC ends as cancelled",
+    !late.ok && late.out.includes("Cancelled") && lateDone.length === 1 && lateDone[0].data.code === "cancelled",
+    JSON.stringify(lateDone.map((e) => e.data)),
   );
 
   const hist = await rpc("history.list", { limit: 10 });

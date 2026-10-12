@@ -236,11 +236,25 @@ path, NAT, port mapping, endpoint, membership log).
    some items were saved now still reports those items (history,
    notifications, gallery; `Session::receive_keep`); "sent" notices on
    Android have their own notification channel.
-10. **Known limit:** a send cancelled while waiting for the woken device can
-    still make that device show "Couldn't receive" if it dials in late. A
-    proper fix needs one accept dispatcher per endpoint that answers
-    cancelled sessions with `CANCELLED` (today each send runs its own accept
-    loop).
+10. ✓ **Cancel while waking (2026-10-12):** a send cancelled while waiting
+    for the woken device no longer makes that device show "Couldn't receive"
+    when it dials in late. One accept loop per endpoint (`net::dispatch`)
+    hands each connection to the send waiting for its session, closes a late
+    dial for a cancelled session with `CANCELLED` until the session would have
+    expired (the endpoint stays open that long), and gives pairing
+    connections to the pairing window; the separate per-send and pairing
+    accept loops, which could close each other's connections, are gone, and
+    on Android a failed admission of some other connection no longer aborts
+    the send. Protocol §9 "Pending sessions". Tests: core e2e (delivered,
+    cancelled before and after the dial arrived, unknown / withdrawn /
+    expired sessions refused, pairing routed while a send waits); agent e2e
+    "phone cancel after the wake: PC ends as cancelled" (without the fix the
+    PC reported `network`, checked by disabling it). Emulator (fake FCM): the
+    PC cancelled right after the wake reached the app; the app dialed in
+    about 5 s later, got `CANCELLED` and ended quietly ("receive cancelled"
+    in logcat, no notice), 2 runs. Agent idle after the change: 0.81 MB
+    private working set, 0 % CPU, 6 threads. Logcat now also says how a
+    receive ended (`receive cancelled` / `receive failed <kind>`).
 11. ✓ **Large files on the phone (2026-10-12):** the hard-coded 500 MB cap no
     longer declines silently. Items above the phone's limit (Settings → "Ask
     before receiving": 100 MB / 500 MB / 1 GB / 2 GB / never; default 500 MB)
@@ -261,6 +275,14 @@ path, NAT, port mapping, endpoint, membership log).
     declines above its own `ask_above_mb` without asking (needs a toast with
     buttons); on a relayed connection the "slow connection" notice can appear
     while the question is open. Real-phone check pending (phone away).
+12. **Open (found 2026-10-12): a woken app sometimes never finishes the
+    receive.** In the emulator, 2 of about 12 cold starts (one without any
+    cancel) hung inside `handleWake` after the app's `devices()` call: no
+    outcome for 45 s to over 2 min although every step has a timeout, and the
+    PC reported `no-answer`. Next: stage logs on the Rust side (wake open,
+    log pull, bind, dial) to find the step; compare the `BIND_TIMEOUT` note in
+    `crates/ffi` (an emulator bind once never returned). Check on the phone
+    too.
 
 ## Security testing (attack our own app) — before wider use
 

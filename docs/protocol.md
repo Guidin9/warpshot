@@ -610,6 +610,12 @@ admission (§8.1) is checked again.
   the user why.
 - **Pending sessions:** the sender keeps items ready for 120 s after sending a wake.
   If no connection arrives in that time, it tells the user the device did not respond.
+  If the user cancels the send while it waits (or while the wake request is
+  still in flight), the sender keeps the session reserved for the rest of
+  those 120 s: a connection that presents it is closed with `CANCELLED` right
+  after the handshake, so the woken device ends quietly instead of reporting
+  a failure. One accept loop per endpoint routes every incoming connection
+  (to the waiting send, the cancelled-session answer, or the pairing window).
 
 ## 10. Limits
 
