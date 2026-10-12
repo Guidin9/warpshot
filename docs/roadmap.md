@@ -275,14 +275,15 @@ path, NAT, port mapping, endpoint, membership log).
     declines above its own `ask_above_mb` without asking (needs a toast with
     buttons); on a relayed connection the "slow connection" notice can appear
     while the question is open. Real-phone check pending (phone away).
-12. **Open (found 2026-10-12): a woken app sometimes never finishes the
-    receive.** In the emulator, 2 of about 12 cold starts (one without any
-    cancel) hung inside `handleWake` after the app's `devices()` call: no
-    outcome for 45 s to over 2 min although every step has a timeout, and the
-    PC reported `no-answer`. Next: stage logs on the Rust side (wake open,
-    log pull, bind, dial) to find the step; compare the `BIND_TIMEOUT` note in
-    `crates/ffi` (an emulator bind once never returned). Check on the phone
-    too.
+12. ✓ **A woken app sometimes never finished the receive (2026-10-12).**
+    Cause: iroh's network monitor (netwatch) forks `ip route` on Android to
+    find the default route; the child sometimes hung before `exec` and blocked
+    the endpoint bind for good, so no timeout could fire (7 of 20 cold starts
+    in the emulator). Fixed by a patched netwatch that reads the route through
+    JNI (`vendor/netwatch`, WARPSHOT-PATCH.md): 0 of 20 afterwards. Details
+    and numbers: spikes.md "Android bind hang". Re-check the patch on every
+    iroh upgrade. Real-phone check pending (the S21 FE never showed it so far,
+    but the race is timing-dependent).
 
 ## Security testing (attack our own app) — before wider use
 

@@ -117,6 +117,31 @@ JVM, iroh's DNS setup panics and falls back only when unwinding) and the
   on "Public"); Android may switch APs on its own, so record the AP before and
   after each run.
 
+### Android bind hang (2026-10-12, roadmap "Next session" 12)
+
+Symptom: a woken app sometimes never finished a receive ("Connecting…"
+forever, the PC reported `no-answer`), with or without a cancel. Stage notes
+from the FFI (`handle_wake`) showed every hang stopped at the endpoint bind
+(`EndpointManager::acquire`), and the 20 s `BIND_TIMEOUT` never fired: the task
+was blocked synchronously, not waiting. Each hung app had a child process of
+the same name: netwatch (iroh's network monitor) runs `ip route show table 0`
+on Android to find the default route, the forked child sometimes stayed stuck
+before `exec` (a `fork` in a multi-threaded ART process), and the spawn then
+blocked the tokio worker for good. iroh needs the default route
+(`has_usable_network`), so the step can't be skipped.
+
+Fix: netwatch is patched (`vendor/netwatch`, `[patch.crates-io]`) to read the
+default route's interface through JNI
+(`ConnectivityManager.getLinkProperties(getActiveNetwork()).getInterfaceName()`),
+like iroh's DNS resolver already reads the DNS servers; no subprocess any more.
+
+| Build | Cold starts (emulator, fake FCM, app force-stopped before each) | Hung at bind | Others |
+|---|---|---|---|
+| before | 20 | 7 (35 %), each with a stuck child process | done in 6–7 s |
+| with the patch | 20 | 0 | done in 6–8 s, all direct |
+
+(0 of 20 by chance at a 35 % hang rate: p ≈ 0.0002.)
+
 ## Spike B — agent skeleton vs the idle budget
 
 Setup: `spikes/agent-skeleton`: tray icon and menu, `RegisterHotKey`, clipboard

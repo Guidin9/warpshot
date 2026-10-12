@@ -1,8 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/core", "crates/cli", "crates/ffi", "apps/windows-agent"]
-# Spikes are throwaway standalone crates; the server is TypeScript.
-exclude = ["spikes", "server", "apps/windows-ui"]
+# Spikes are throwaway standalone crates; the server is TypeScript; vendor/
+# holds patched third-party crates (not linted as ours).
+exclude = ["spikes", "server", "apps/windows-ui", "vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -31,6 +32,11 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# netwatch with the Android default route read through JNI instead of a forked
+# `ip route` (which could hang the endpoint bind): vendor/netwatch/WARPSHOT-PATCH.md.
+[patch.crates-io]
+netwatch = { path = "vendor/netwatch" }
 
 # Crypto-heavy tests are slow unoptimized; optimize dependencies only.
 [profile.dev.package."*"]
