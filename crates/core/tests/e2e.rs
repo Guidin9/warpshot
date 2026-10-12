@@ -721,3 +721,252 @@ async fn progress_and_cancel() {
     ep_pc.close().await;
     ep_phone.close().await;
 }
+
+/// How the receiver's user answers the question about large items (§8.4).
+#[derive(Clone, Copy)]
+enum Answer {
+    Yes,
+    No,
+    /// No way to ask (no UI): the core declines with "too large".
+    CantAsk,
+    /// The question stays open until it is withdrawn.
+    Never,
+    /// "Yes", but only after this long.
+    YesAfter(std::time::Duration),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum CancelBy {
+    Nobody,
+    Sender,
+    Receiver,
+}
+
+struct AskRun {
+    kept: Vec<nx::Received>,
+    recv: Result<(), net::NetError>,
+    sent: Result<Vec<(u32, bool)>, net::NetError>,
+    /// What the question showed; empty if none was asked.
+    asked: Vec<Item>,
+    /// The question was dropped without an answer.
+    withdrawn: bool,
+}
+
+/// Sets its flag when dropped: the core withdrew a question.
+struct Withdrawn(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for Withdrawn {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// One phone → PC transfer where the PC asks about items above 10 bytes.
+async fn ask_run(
+    pc: &Device,
+    phone: &Device,
+    items: Vec<OutItem>,
+    answer: Answer,
+    cancel_by: CancelBy,
+) -> AskRun {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    use warpshot_core::net::xfer::Cancel;
+
+    let ep_pc = net::bind(&pc.keys.ik, Relay::Disabled).await.unwrap();
+    let ep_phone = net::bind(&phone.keys.ik, Relay::Disabled).await.unwrap();
+    let (pc_log, phone_log) = (pc.log.clone().unwrap(), phone.log.clone().unwrap());
+    let pc_addr = net::dial_info(&ep_pc);
+    let policy = Policy {
+        dir: tmpdir("ask"),
+        max_size: 10,
+        accept_large: false,
+    };
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let withdrawn = Arc::new(AtomicBool::new(false));
+    let (send_cancel, recv_cancel) = (Cancel::new(), Cancel::new());
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+    let ask = {
+        let (asked, withdrawn) = (Arc::clone(&asked), Arc::clone(&withdrawn));
+        move |large: Vec<Item>| async move {
+            *asked.lock().unwrap() = large;
+            let _ = started_tx.send(());
+            match answer {
+                Answer::Yes => Some(true),
+                Answer::No => Some(false),
+                Answer::CantAsk => None,
+                Answer::Never => {
+                    let _guard = Withdrawn(withdrawn);
+                    std::future::pending::<Option<bool>>().await
+                }
+                Answer::YesAfter(d) => {
+                    tokio::time::sleep(d).await;
+                    Some(true)
+                }
+            }
+        }
+    };
+    let canceller = {
+        let c = match cancel_by {
+            CancelBy::Sender => Some(send_cancel.clone()),
+            CancelBy::Receiver => Some(recv_cancel.clone()),
+            CancelBy::Nobody => None,
+        };
+        async move {
+            if let Some(c) = c
+                && started_rx.await.is_ok()
+            {
+                c.cancel();
+            }
+        }
+    };
+    let ((kept, recv), sent, ()) = tokio::join!(
+        async {
+            let conn = accept_conn(&ep_pc).await;
+            let mut s = nx::accept(&ep_pc, conn, &pc_log).await.unwrap();
+            s.cancel_with(&recv_cancel);
+            s.receive_keep_asking(&policy, |_| true, ask).await
+        },
+        async {
+            let mut s = nx::dial(&ep_phone, &phone_log, &pc.id(), &pc_addr, [0; 16])
+                .await
+                .unwrap();
+            s.cancel_with(&send_cancel);
+            s.send_items(items).await
+        },
+        canceller
+    );
+    ep_pc.close().await;
+    ep_phone.close().await;
+    let asked = std::mem::take(&mut *asked.lock().unwrap());
+    AskRun {
+        kept,
+        recv,
+        sent,
+        asked,
+        withdrawn: withdrawn.load(Ordering::SeqCst),
+    }
+}
+
+async fn paired_pc_and_phone() -> (Device, Device) {
+    let mut pc = Device::new("pc", platform::WINDOWS).unwrap();
+    let mut phone = Device::new("phone", platform::ANDROID).unwrap();
+    let (d, s) = pair_once(&pc, &phone).await;
+    pc.log = Some(d.unwrap().log);
+    phone.log = Some(s.unwrap().log);
+    (pc, phone)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn large_items_ask_the_user() {
+    use warpshot_core::xfer::decline;
+    let (pc, phone) = paired_pc_and_phone().await;
+    let small = || nx::text_item(1, "küçük", now_ms()).unwrap();
+
+    // Small items only: no question.
+    let r = ask_run(&pc, &phone, vec![small()], Answer::No, CancelBy::Nobody).await;
+    assert!(r.asked.is_empty(), "nothing above the threshold");
+    assert_eq!(r.sent.unwrap(), vec![(1, true)]);
+
+    // "Yes": the large item arrives; the question named it.
+    let r = ask_run(
+        &pc,
+        &phone,
+        vec![big_item(2, 4000)],
+        Answer::Yes,
+        CancelBy::Nobody,
+    )
+    .await;
+    assert_eq!(r.asked.len(), 1);
+    assert_eq!((r.asked[0].id, r.asked[0].size), (2, 4000));
+    assert_eq!(r.sent.unwrap(), vec![(2, true)]);
+    r.recv.unwrap();
+    assert_eq!(r.kept.len(), 1);
+
+    // "No" to a mixed offer: only the small item is accepted.
+    let r = ask_run(
+        &pc,
+        &phone,
+        vec![small(), big_item(2, 4000)],
+        Answer::No,
+        CancelBy::Nobody,
+    )
+    .await;
+    assert_eq!(r.asked.len(), 1, "only the large item is asked about");
+    assert_eq!(r.sent.unwrap(), vec![(1, true), (2, false)]);
+    assert_eq!(r.kept.len(), 1);
+    assert!(r.kept[0].item.is_inline());
+
+    // "No" with nothing else: declined by the user.
+    let r = ask_run(
+        &pc,
+        &phone,
+        vec![big_item(2, 4000)],
+        Answer::No,
+        CancelBy::Nobody,
+    )
+    .await;
+    assert_eq!(r.sent.unwrap_err(), net::NetError::Declined(decline::USER));
+    r.recv.unwrap();
+    assert!(r.kept.is_empty());
+
+    // No way to ask: declined as too large.
+    let r = ask_run(
+        &pc,
+        &phone,
+        vec![big_item(2, 4000)],
+        Answer::CantAsk,
+        CancelBy::Nobody,
+    )
+    .await;
+    assert_eq!(
+        r.sent.unwrap_err(),
+        net::NetError::Declined(decline::TOO_LARGE)
+    );
+
+    // The sender cancels while the question is open: it is withdrawn.
+    let r = ask_run(
+        &pc,
+        &phone,
+        vec![big_item(2, 4000)],
+        Answer::Never,
+        CancelBy::Sender,
+    )
+    .await;
+    assert_eq!(r.sent.unwrap_err(), net::NetError::Cancelled);
+    assert_eq!(r.recv.unwrap_err(), net::NetError::Cancelled);
+    assert!(r.withdrawn, "the question is withdrawn");
+
+    // The receiver cancels while asking (e.g. Cancel in its notification).
+    let r = ask_run(
+        &pc,
+        &phone,
+        vec![big_item(2, 4000)],
+        Answer::Never,
+        CancelBy::Receiver,
+    )
+    .await;
+    assert_eq!(r.recv.unwrap_err(), net::NetError::Cancelled);
+    assert_eq!(r.sent.unwrap_err(), net::NetError::Cancelled);
+    assert!(r.withdrawn);
+}
+
+/// The sender waits for an answer longer than the 30 s idle timeout (§8.4).
+/// Takes ~35 s: `cargo test -p warpshot-core --test e2e -- --ignored`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "slow (35 s)"]
+async fn a_slow_answer_is_still_accepted() {
+    let (pc, phone) = paired_pc_and_phone().await;
+    let r = ask_run(
+        &pc,
+        &phone,
+        vec![big_item(2, 4000)],
+        Answer::YesAfter(std::time::Duration::from_secs(35)),
+        CancelBy::Nobody,
+    )
+    .await;
+    assert_eq!(r.sent.unwrap(), vec![(2, true)]);
+    assert_eq!(r.kept.len(), 1);
+}

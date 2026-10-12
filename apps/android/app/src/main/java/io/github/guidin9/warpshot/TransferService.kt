@@ -84,6 +84,10 @@ class TransferService : Service() {
                 ids.forEach { cancel(this, it) }
                 if (active.get() == 0) stop()
             }
+            ACTION_ANSWER -> {
+                answer(this, intent.getLongExtra(EXTRA_ID, 0), intent.getBooleanExtra(EXTRA_ACCEPT, false))
+                if (active.get() == 0) stop()
+            }
             ACTION_SEND -> run(intent.getLongExtra(EXTRA_ID, 0)) { id ->
                 Sender.send(
                     applicationContext,
@@ -139,8 +143,10 @@ class TransferService : Service() {
         private const val EXTRA_TARGET = "target"
         private const val EXTRA_TEXT = "text"
         private const val EXTRA_PATHS = "paths"
+        private const val EXTRA_ACCEPT = "accept"
         private const val ACTION_SEND = "io.github.guidin9.warpshot.SEND"
         private const val ACTION_CANCEL = "io.github.guidin9.warpshot.CANCEL"
+        private const val ACTION_ANSWER = "io.github.guidin9.warpshot.ANSWER"
         /** [EXTRA_ID] value for "cancel every running transfer". */
         const val ALL = -1L
 
@@ -184,6 +190,25 @@ class TransferService : Service() {
                 }
             }
         }
+
+        /** The user's answer to the question about large items of transfer [id] (protocol §8.4). */
+        fun answer(ctx: Context, id: Long, accept: Boolean) {
+            Notifier.clearAsk(ctx, id)
+            Transfers.ask(id, null)
+            Core.get(ctx)?.answerLarge(id.toULong(), accept)
+        }
+
+        /** The question notification's Accept / Decline action for transfer [id]. */
+        fun answerIntent(ctx: Context, id: Long, accept: Boolean): PendingIntent = PendingIntent.getForegroundService(
+            ctx,
+            // Distinct from the Cancel action's request code for the same transfer.
+            (id * 4 + if (accept) 1 else 2).toInt(),
+            Intent(ctx, TransferService::class.java)
+                .setAction(ACTION_ANSWER)
+                .putExtra(EXTRA_ID, id)
+                .putExtra(EXTRA_ACCEPT, accept),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
 
         /** The notification's Cancel action for transfer [id] (or [ALL]). */
         fun cancelIntent(ctx: Context, id: Long): PendingIntent = PendingIntent.getForegroundService(
@@ -343,7 +368,7 @@ object Receiver {
             ?: ctx.getString(R.string.your_pc)
         Transfers.start(id, incoming = true, peer = from, label = "")
         val items = try {
-            core.handleWake(env, inbox.path, id.toULong())
+            core.handleWake(env, inbox.path, id.toULong(), Prefs.askAboveBytes(ctx))
         } catch (e: WarpException.Rejected) {
             Transfers.finish(id, Outcome.Failed(errorText(ctx, e)))
             return // not a wake we accept (replay, stale, not a member): stay silent
@@ -354,6 +379,8 @@ object Receiver {
             Transfers.finish(id, Outcome.Failed(errorText(ctx, e)))
             Notifier.failed(ctx, errorText(ctx, e))
             return
+        } finally {
+            Notifier.clearAsk(ctx, id) // answered, timed out or cancelled: the question is gone
         }
         Transfers.finish(id, Outcome.Done)
         if (items.isEmpty()) return // e.g. a group-change wake
@@ -388,6 +415,7 @@ object Receiver {
 
 /** "42 % · 12 MB / 250 MB · 8.1 MB/s" for a running transfer. */
 fun progressLine(ctx: Context, t: TransferState): String {
+    if (t.ask != null) return ctx.getString(R.string.waiting_answer)
     if (!t.running || t.total <= 0) {
         return if (t.incoming) ctx.getString(R.string.connecting) else ctx.getString(R.string.waiting_for, t.peer)
     }
@@ -437,7 +465,10 @@ object Notifier {
     private const val CH_SENT = "sent"
     private const val CH_PROGRESS = "progress"
     private const val CH_CONNECTION = "connection"
+    private const val CH_ASK = "ask"
     private val nextId = AtomicInteger(100)
+    /** Notification ids of open questions, by transfer id. */
+    private val asks = java.util.concurrent.ConcurrentHashMap<Long, Int>()
 
     fun channels(ctx: Context) {
         val nm = ctx.getSystemService(NotificationManager::class.java)
@@ -454,6 +485,44 @@ object Notifier {
         nm.createNotificationChannel(
             NotificationChannel(CH_CONNECTION, ctx.getString(R.string.channel_connection), NotificationManager.IMPORTANCE_DEFAULT),
         )
+        // High: the question pops up, since the sender waits for the answer.
+        nm.createNotificationChannel(
+            NotificationChannel(CH_ASK, ctx.getString(R.string.channel_ask), NotificationManager.IMPORTANCE_HIGH),
+        )
+    }
+
+    /** "name · 1.2 GB" or "3 large files · 2.1 GB". */
+    fun askText(ctx: Context, ask: Ask): String {
+        val size = Formatter.formatShortFileSize(ctx, ask.bytes)
+        return if (ask.count == 1) ctx.getString(R.string.ask_one, ask.name, size) else ctx.getString(R.string.ask_many, ask.count, size)
+    }
+
+    /**
+     * Asks whether to accept [ask] from [peer]; the core withdraws an
+     * unanswered question after 110 s, so the notification goes then too.
+     */
+    fun askLarge(ctx: Context, id: Long, peer: String, ask: Ask) {
+        val nid = asks.getOrPut(id) { nextId.incrementAndGet() }
+        post(
+            ctx,
+            NotificationCompat.Builder(ctx, CH_ASK)
+                .setSmallIcon(R.drawable.ic_notify)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setOngoing(true)
+                .setTimeoutAfter(110_000)
+                .setContentTitle(ctx.getString(R.string.ask_title, peer))
+                .setContentText(askText(ctx, ask))
+                .setContentIntent(openApp(ctx))
+                .addAction(0, ctx.getString(R.string.ask_decline), TransferService.answerIntent(ctx, id, false))
+                .addAction(0, ctx.getString(R.string.ask_accept), TransferService.answerIntent(ctx, id, true)),
+            nid,
+        )
+    }
+
+    fun clearAsk(ctx: Context, id: Long) {
+        val nid = asks.remove(id) ?: return
+        NotificationManagerCompat.from(ctx).cancel(nid)
     }
 
     /** A transfer has had no direct path for a while (one notice, replaced on repeat). */

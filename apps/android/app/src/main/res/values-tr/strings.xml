@@ -168,4 +168,17 @@
     <string name="clipboard_nothing">Pano boş.</string>
     <string name="shortcut_long">%1$s cihazına gönder</string>
     <string name="image_saved_only">Pictures/Warpshot klasörüne kaydedildi</string>
+    <string name="channel_ask">Büyük dosya soruları</string>
+    <string name="ask_title">%1$s cihazından büyük aktarım kabul edilsin mi?</string>
+    <string name="ask_one">%1$s · %2$s</string>
+    <string name="ask_many">%1$d büyük dosya · %2$s</string>
+    <string name="ask_accept">Kabul et</string>
+    <string name="ask_decline">Reddet</string>
+    <string name="waiting_answer">Yanıtınız bekleniyor</string>
+    <string name="set_ask">Almadan önce sor</string>
+    <string name="set_ask_desc">%1$s üzerindeki dosyalar</string>
+    <string name="set_ask_never">Hiç sorma</string>
+    <string name="set_ask_never_desc">Her boyuttaki dosya sormadan alınır.</string>
+    <string name="set_ask_q">Şu boyutun üzerindeki dosyaları almadan önce sor</string>
+    <string name="change">Değiştir</string>
 </resources>

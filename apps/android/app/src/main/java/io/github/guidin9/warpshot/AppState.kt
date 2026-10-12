@@ -22,6 +22,18 @@ object Prefs {
 
     fun keepHistory(ctx: Context) = p(ctx).getBoolean("history", true)
     fun setKeepHistory(ctx: Context, on: Boolean) = p(ctx).edit().putBoolean("history", on).apply()
+
+    /**
+     * Ask before receiving items above this many MB (protocol §8.4); 0 never
+     * asks. Decimal MB, like the sizes Android shows.
+     */
+    fun askAboveMb(ctx: Context) = p(ctx).getInt("ask_above_mb", 500)
+    fun setAskAboveMb(ctx: Context, mb: Int) = p(ctx).edit().putInt("ask_above_mb", mb).apply()
+    fun askAboveBytes(ctx: Context): ULong =
+        askAboveMb(ctx).let { if (it <= 0) ULong.MAX_VALUE else it.toULong() * 1_000_000uL }
+
+    /** The choices the settings offer, in MB (0 = never ask). */
+    val ASK_CHOICES = listOf(100, 500, 1000, 2000, 0)
 }
 
 /** Item kinds (protocol §8.4). */

@@ -533,6 +533,39 @@ private fun ActionRow(title: String, desc: String, action: String?, onClick: () 
     }
 }
 
+/** "500 MB" for a choice; 0 is "Never ask" (with [long], the row's description). */
+private fun askLimitText(ctx: Context, mb: Int, long: Boolean = false): String = when {
+    mb <= 0 -> ctx.getString(if (long) R.string.set_ask_never_desc else R.string.set_ask_never)
+    long -> ctx.getString(R.string.set_ask_desc, Formatter.formatShortFileSize(ctx, mb * 1_000_000L))
+    else -> Formatter.formatShortFileSize(ctx, mb * 1_000_000L)
+}
+
+@Composable
+private fun AskLimitDialog(current: Int, onDismiss: () -> Unit, onPick: (Int) -> Unit) {
+    val ctx = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.set_ask_q)) },
+        text = {
+            Column {
+                Prefs.ASK_CHOICES.forEach { mb ->
+                    Row(
+                        Modifier.fillMaxWidth().selectable(selected = current == mb, role = Role.RadioButton) { onPick(mb) }
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = current == mb, onClick = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(askLimitText(ctx, mb))
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
+    )
+}
+
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
     val ctx = LocalContext.current
@@ -540,6 +573,8 @@ fun SettingsScreen(onBack: () -> Unit) {
     val snackbar = remember { SnackbarHostState() }
     var copy by remember { mutableStateOf(Prefs.copyOnReceive(ctx)) }
     var history by remember { mutableStateOf(Prefs.keepHistory(ctx)) }
+    var askMb by remember { mutableStateOf(Prefs.askAboveMb(ctx)) }
+    var askChoose by remember { mutableStateOf(false) }
     var unrestricted by remember { mutableStateOf(true) }
     var confirm by remember { mutableStateOf(false) }
     LifecycleResumeEffect(Unit) {
@@ -559,6 +594,9 @@ fun SettingsScreen(onBack: () -> Unit) {
                 SwitchRow(stringResource(R.string.set_history), stringResource(R.string.set_history_desc), history) {
                     history = it
                     Prefs.setKeepHistory(ctx, it)
+                }
+                ActionRow(stringResource(R.string.set_ask), askLimitText(ctx, askMb, long = true), stringResource(R.string.change)) {
+                    askChoose = true
                 }
                 TextButton(onClick = { confirm = true }) { Text(stringResource(R.string.history_clear)) }
             }
@@ -603,6 +641,13 @@ fun SettingsScreen(onBack: () -> Unit) {
                     runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/Guidin9/warpshot"))) }
                 }) { Text(stringResource(R.string.about_source)) }
             }
+        }
+    }
+    if (askChoose) {
+        AskLimitDialog(askMb, onDismiss = { askChoose = false }) {
+            askChoose = false
+            askMb = it
+            Prefs.setAskAboveMb(ctx, it)
         }
     }
     if (confirm) {

@@ -13,11 +13,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -118,11 +120,37 @@ fun transferTitle(t: TransferState): String = when {
     else -> t.label
 }
 
-/** One running transfer: direction, name, progress and Cancel. */
+/**
+ * One running transfer: direction, name, progress and Cancel; while large
+ * items wait for the user, the question with Decline / Accept (protocol §8.4).
+ */
 @Composable
-fun TransferRow(t: TransferState, onCancel: () -> Unit, modifier: Modifier = Modifier) {
+fun TransferRow(t: TransferState, onCancel: () -> Unit, modifier: Modifier = Modifier, onAnswer: (Boolean) -> Unit = {}) {
+    Column(modifier.fillMaxWidth()) {
+        TransferLine(t, onCancel)
+        val ask = t.ask ?: return@Column
+        val ctx = LocalContext.current
+        Text(
+            Notifier.askText(ctx, ask),
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = 52.dp, top = 4.dp),
+        )
+        Row(
+            Modifier.fillMaxWidth().padding(start = 52.dp, top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+        ) {
+            TextButton(onClick = { onAnswer(false) }) { Text(stringResource(R.string.ask_decline)) }
+            FilledTonalButton(onClick = { onAnswer(true) }) { Text(stringResource(R.string.ask_accept)) }
+        }
+    }
+}
+
+@Composable
+private fun TransferLine(t: TransferState, onCancel: () -> Unit) {
     val ctx = LocalContext.current
-    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         IconTile(if (t.incoming) R.drawable.ic_arrow_down else R.drawable.ic_arrow_up, size = 40.dp)
         Column(
             Modifier.weight(1f).padding(horizontal = 12.dp),

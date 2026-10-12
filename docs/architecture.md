@@ -204,7 +204,7 @@ reject the removed EndpointId on the transfer ALPN.
 | Default target | the first paired phone |
 | On receive | save ✓ · clipboard ✓ · notification with preview ✓ · history ✓ |
 | Save folder (Windows) | `Downloads\Warpshot` |
-| Ask above | 500 MB |
+| Ask above | 500 MB (the phone asks; the PC still declines above it, roadmap "Next session" 11) |
 | Relay data | on |
 | Start with Windows | on |
 | History retention | 30 days or 200 items |

@@ -520,8 +520,15 @@ all-zero, the dialer sends `Offer`.
 
 **Flow:**
 1. The sender sends `Offer`.
-2. The receiver applies its policy (size limits; asks the user above 500 MB by
-   default) and answers `Accept` or `Decline`.
+2. The receiver applies its policy and answers `Accept` or `Decline`. Items
+   larger than its ask threshold (a setting, 500 MB by default) need the
+   user's consent: the receiver asks and waits at most 110 s. If the user
+   agrees, those items are accepted too; otherwise only the smaller items are.
+   With nothing left to accept it declines with reason 1 (the user said no)
+   or 2 (no answer in time, or no way to ask). The sender waits up to 120 s
+   for the answer to `Offer`; every other control read uses the 30 s idle
+   timeout. Either side may cancel while the question is open (closing with
+   `CANCELLED`, below); the receiver then withdraws the question.
 3. The sender streams each accepted non-inline item (§8.6) and then sends
    `ItemDone` for it.
 4. The receiver answers `ItemAck` after a durable write.
@@ -611,6 +618,7 @@ admission (§8.1) is checked again.
 | CBOR nesting depth | 8 |
 | Control frame | 1 MiB |
 | Items per `Offer` | 1000 |
+| Answer to `Offer` (sender's wait / receiver's question) | 120 s / 110 s |
 | Inline text | 64 KiB |
 | Item name / MIME | 255 / 127 bytes |
 | Device name | 64 bytes |

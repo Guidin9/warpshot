@@ -241,6 +241,26 @@ path, NAT, port mapping, endpoint, membership log).
     proper fix needs one accept dispatcher per endpoint that answers
     cancelled sessions with `CANCELLED` (today each send runs its own accept
     loop).
+11. ✓ **Large files on the phone (2026-10-12):** the hard-coded 500 MB cap no
+    longer declines silently. Items above the phone's limit (Settings → "Ask
+    before receiving": 100 MB / 500 MB / 1 GB / 2 GB / never; default 500 MB)
+    raise a question: a high-priority notification with Decline / Accept, and
+    the same buttons on the home screen's transfer row. No answer within
+    110 s declines (protocol §8.4; the sender now waits 120 s for the answer
+    to `Offer`, other reads keep 30 s). The PC says why a send was refused
+    ("The device declined it." / "above the device's size limit and wasn't
+    accepted"; `transfer.done` codes `declined`, `not-accepted`). Tests: core
+    e2e (yes, no, a mixed offer, no way to ask, a cancel from either side
+    withdraws the question; an ignored 35 s test for a slow answer). Emulator
+    check with the new fake FCM (dev-setup §9): accept from the notification
+    (3 MB, hash equal, answered after 49 s), decline, a PC cancel while asking
+    (question gone), no answer (ended after 112 s with `not-accepted`), small
+    text without a question, the in-app buttons in Turkish, the settings
+    dialog; no "Couldn't receive" notice after a decline or cancel. Agent
+    idle after the change: 0.87 MB private working set, 0 % CPU, 6 threads. Open: the PC still
+    declines above its own `ask_above_mb` without asking (needs a toast with
+    buttons); on a relayed connection the "slow connection" notice can appear
+    while the question is open. Real-phone check pending (phone away).
 
 ## Security testing (attack our own app) — before wider use
 

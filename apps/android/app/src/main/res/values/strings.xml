@@ -170,4 +170,17 @@
     <string name="clipboard_nothing">The clipboard is empty.</string>
     <string name="shortcut_long">Send to %1$s</string>
     <string name="image_saved_only">Saved to Pictures/Warpshot</string>
+    <string name="channel_ask">Questions about large files</string>
+    <string name="ask_title">Accept a large transfer from %1$s?</string>
+    <string name="ask_one">%1$s · %2$s</string>
+    <string name="ask_many">%1$d large files · %2$s</string>
+    <string name="ask_accept">Accept</string>
+    <string name="ask_decline">Decline</string>
+    <string name="waiting_answer">Waiting for your answer</string>
+    <string name="set_ask">Ask before receiving</string>
+    <string name="set_ask_desc">Files larger than %1$s</string>
+    <string name="set_ask_never">Never ask</string>
+    <string name="set_ask_never_desc">Files of any size are received without asking.</string>
+    <string name="set_ask_q">Ask before receiving files larger than</string>
+    <string name="change">Change</string>
 </resources>

@@ -88,6 +88,15 @@ class CoreObserver(private val ctx: Context) : TransferObserver {
     override fun onRoute(incoming: Boolean, everDirect: Boolean, slow: Boolean, durationMs: ULong) {
         Log.i("Warpshot", "transfer ${if (incoming) "in" else "out"} direct=$everDirect slow=$slow ms=$durationMs")
     }
+
+    /** Items above the receive limit: ask in the app and in a notification (protocol §8.4). */
+    override fun onAskLarge(transfer: ULong, count: UInt, totalBytes: ULong, name: String) {
+        val id = transfer.toLong()
+        val ask = Ask(count.toInt(), totalBytes.toLong(), name)
+        Transfers.ask(id, ask)
+        Log.i("Warpshot", "ask large count=$count")
+        Notifier.askLarge(ctx, id, Transfers.state.value[id]?.peer ?: ctx.getString(R.string.your_pc), ask)
+    }
 }
 
 /** Process-wide access to the Rust core. */

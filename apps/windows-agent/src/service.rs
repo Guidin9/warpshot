@@ -140,6 +140,9 @@ fn net_code(e: &NetError) -> &'static str {
     match e {
         NetError::Timeout => "timeout",
         NetError::Fork => "fork",
+        // §8.4: the receiver's user said no / nobody confirmed a large item.
+        NetError::Declined(wx::decline::USER) => "declined",
+        NetError::Declined(wx::decline::TOO_LARGE) => "not-accepted",
         NetError::Rejected | NetError::Declined(_) => "rejected",
         NetError::Server(_) | NetError::HeadMoved => "server",
         NetError::Identity => "not-member",
@@ -1209,6 +1212,12 @@ impl Service {
                         "Önce bir cihaz eşleştirin (tepsi simgesi → Ayarlar).",
                     )
                     .to_owned(),
+                    "declined" => pick("The device declined it.", "Cihaz reddetti.").to_owned(),
+                    "not-accepted" => pick(
+                        "It's above the device's size limit and wasn't accepted there.",
+                        "Cihazın boyut sınırının üstünde ve orada kabul edilmedi.",
+                    )
+                    .to_owned(),
                     other => l10n!("Sending failed ({}).", "Gönderilemedi ({}).", other),
                 };
                 if origin == Origin::Hotkey {
@@ -1216,6 +1225,8 @@ impl Service {
                         "offline" => pick("device offline", "cihaz çevrimdışı").to_owned(),
                         "no-answer" => pick("no answer", "yanıt yok").to_owned(),
                         "not-paired" => pick("not paired", "eşleşme yok").to_owned(),
+                        "declined" => pick("declined", "reddedildi").to_owned(),
+                        "not-accepted" => pick("not accepted", "kabul edilmedi").to_owned(),
                         other => other.to_owned(),
                     };
                     self.flyout(

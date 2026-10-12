@@ -14,6 +14,9 @@ sealed interface Outcome {
     data class Failed(val message: String) : Outcome
 }
 
+/** An incoming transfer's items above the receive limit, waiting for the user (protocol §8.4). */
+data class Ask(val count: Int, val bytes: Long, val name: String)
+
 /** One transfer as the share card and the ongoing notification show it (roadmap 3 + 4b). */
 data class TransferState(
     val id: Long,
@@ -26,6 +29,8 @@ data class TransferState(
     val bytesPerSec: Long = 0,
     /** Items accepted and data flowing (the first progress report arrived). */
     val running: Boolean = false,
+    /** An open question about large items; null when none is open. */
+    val ask: Ask? = null,
     val outcome: Outcome? = null,
     val endedAt: Long = 0,
 ) {
@@ -59,9 +64,14 @@ object Transfers {
         m + (id to t.copy(done = done, total = total, bytesPerSec = bytesPerSec, running = true))
     }
 
+    fun ask(id: Long, ask: Ask?) = _state.update { m ->
+        val t = m[id] ?: return@update m
+        m + (id to t.copy(ask = ask))
+    }
+
     fun finish(id: Long, outcome: Outcome) = _state.update { m ->
         val t = m[id] ?: return@update m
-        m + (id to t.copy(outcome = outcome, endedAt = SystemClock.elapsedRealtime()))
+        m + (id to t.copy(ask = null, outcome = outcome, endedAt = SystemClock.elapsedRealtime()))
     }
 
     fun active(): List<TransferState> = _state.value.values.filter { it.outcome == null }.sortedBy { it.id }

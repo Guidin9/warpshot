@@ -126,6 +126,7 @@ class HomeActions(
     val pickFiles: () -> Unit = {},
     val selectTarget: (String) -> Unit = {},
     val cancel: (Long) -> Unit = {},
+    val answer: (Long, Boolean) -> Unit = { _, _ -> },
     val pairAnother: () -> Unit = {},
     val enableNotifications: () -> Unit = {},
     val openHistory: () -> Unit = {},
@@ -320,6 +321,7 @@ fun MainScreen(mine: MutableSet<Long>) {
             Core.setTarget(ctx, it)
         },
         cancel = { TransferService.cancel(ctx, it) },
+        answer = { id, accept -> TransferService.answer(ctx, id, accept) },
         pairAnother = { scan() },
         enableNotifications = { enableNotifications() },
         openHistory = { screen = "history" },
@@ -567,7 +569,9 @@ fun HomeScreen(
                                 Text(stringResource(R.string.preparing), style = MaterialTheme.typography.bodyMedium)
                             }
                         }
-                        transfers.forEach { t -> TransferRow(t, onCancel = { actions.cancel(t.id) }) }
+                        transfers.forEach { t ->
+                            TransferRow(t, onCancel = { actions.cancel(t.id) }, onAnswer = { actions.answer(t.id, it) })
+                        }
                     }
                 }
             }

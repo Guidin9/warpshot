@@ -6,7 +6,7 @@
 
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, oneshot};
 use warpshot_core::{
     b64u,
     client::Client,
@@ -21,7 +21,9 @@ use warpshot_core::{
         xfer::{self as nx, Cancel, OutItem, Policy, Source},
     },
     pair::QrPayload,
+    sanitize::sanitize,
     wake::{ReplayCache, WakeError},
+    xfer::Item,
 };
 use zeroize::Zeroizing;
 
@@ -106,6 +108,12 @@ pub trait TransferObserver: Send + Sync {
     fn on_path(&self, incoming: bool, ms: u64, note: String);
     /// A transfer finished (diagnostics: route kind and duration, no addresses).
     fn on_route(&self, incoming: bool, ever_direct: bool, slow: bool, duration_ms: u64);
+    /// Incoming transfer `transfer` has `count` items above the receive limit,
+    /// `total_bytes` together (§8.4): ask the user and pass the answer to
+    /// [`Warpshot::answer_large`]. `name` is the first one's (sanitized) name,
+    /// for this device's UI only. The question ends with the transfer; no
+    /// answer within 110 s declines those items.
+    fn on_ask_large(&self, transfer: u64, count: u32, total_bytes: u64, name: String);
 }
 
 struct KsAdapter(Arc<dyn PlatformKeystore>);
@@ -215,6 +223,8 @@ pub struct Warpshot {
     observer: std::sync::Mutex<Option<Arc<dyn TransferObserver>>>,
     /// Running transfers by the app's id, for [`Warpshot::cancel_transfer`].
     active: Arc<std::sync::Mutex<HashMap<u64, Cancel>>>,
+    /// Open questions about large items by transfer id, for [`Warpshot::answer_large`].
+    asks: Arc<std::sync::Mutex<HashMap<u64, oneshot::Sender<bool>>>>,
     rt: tokio::runtime::Runtime,
 }
 
@@ -253,6 +263,37 @@ impl Tracked {
 impl Drop for Tracked {
     fn drop(&mut self) {
         if let Ok(mut m) = self.active.lock() {
+            m.remove(&self.id);
+        }
+    }
+}
+
+/// An open question about large items; withdrawn (unregistered) when dropped.
+struct Question {
+    asks: Arc<std::sync::Mutex<HashMap<u64, oneshot::Sender<bool>>>>,
+    id: u64,
+}
+
+impl Question {
+    fn open(
+        asks: &Arc<std::sync::Mutex<HashMap<u64, oneshot::Sender<bool>>>>,
+        id: u64,
+    ) -> (Self, oneshot::Receiver<bool>) {
+        let (tx, rx) = oneshot::channel();
+        if let Ok(mut m) = asks.lock() {
+            m.insert(id, tx);
+        }
+        let q = Self {
+            asks: Arc::clone(asks),
+            id,
+        };
+        (q, rx)
+    }
+}
+
+impl Drop for Question {
+    fn drop(&mut self) {
+        if let Ok(mut m) = self.asks.lock() {
             m.remove(&self.id);
         }
     }
@@ -306,6 +347,21 @@ impl Warpshot {
             o.on_route(incoming, route.ever_direct, route.slow, ms);
         }
         out
+    }
+
+    /// Puts large items to the user (§8.4); `None` without an observer to ask.
+    /// Dropping the future withdraws the question.
+    async fn ask_large(&self, transfer: u64, large: Vec<Item>) -> Option<bool> {
+        let obs = self.observer()?;
+        let (_question, answer) = Question::open(&self.asks, transfer);
+        let total = large.iter().fold(0u64, |a, i| a.saturating_add(i.size));
+        let count = u32::try_from(large.len()).unwrap_or(u32::MAX);
+        let name = large
+            .first()
+            .map(|i| sanitize(&i.name, "file"))
+            .unwrap_or_default();
+        obs.on_ask_large(transfer, count, total, name);
+        answer.await.ok()
     }
 
     /// Runs the in-band log sync (§8.5) and persists the log if it changed.
@@ -383,6 +439,7 @@ impl Warpshot {
             pending: Mutex::new(PendingSessions::default()),
             observer: std::sync::Mutex::new(None),
             active: Arc::default(),
+            asks: Arc::default(),
             rt,
         }))
     }
@@ -409,6 +466,13 @@ impl Warpshot {
             }
             None => false,
         }
+    }
+
+    /// The user's answer to [`TransferObserver::on_ask_large`] for transfer
+    /// `transfer`. Returns false if that question is no longer open.
+    pub fn answer_large(&self, transfer: u64, accept: bool) -> bool {
+        let tx = self.asks.lock().ok().and_then(|mut m| m.remove(&transfer));
+        tx.is_some_and(|tx| tx.send(accept).is_ok())
     }
 }
 
@@ -461,16 +525,19 @@ impl Warpshot {
     }
 
     /// `transfer` is the app's id for this transfer (progress, cancel).
+    /// Items above `ask_above_bytes` are put to the user first
+    /// ([`TransferObserver::on_ask_large`]); `u64::MAX` never asks.
     pub async fn handle_wake(
         self: Arc<Self>,
         envelope_b64u: String,
         inbox_dir: String,
         transfer: u64,
+        ask_above_bytes: u64,
     ) -> Result<Vec<ReceivedItem>, WarpError> {
         let this = Arc::clone(&self);
         self.rt
             .spawn(async move {
-                this.handle_wake_impl(envelope_b64u, inbox_dir, transfer)
+                this.handle_wake_impl(envelope_b64u, inbox_dir, transfer, ask_above_bytes)
                     .await
             })
             .await
@@ -814,6 +881,7 @@ impl Warpshot {
         envelope_b64u: String,
         inbox_dir: String,
         transfer: u64,
+        ask_above_bytes: u64,
     ) -> Result<Vec<ReceivedItem>, WarpError> {
         let env = b64u::decode(&envelope_b64u).ok_or(WarpError::Invalid)?;
         let mut synced = false;
@@ -860,12 +928,13 @@ impl Warpshot {
                 self.sync_session(&mut s, &mut log).await?;
                 let policy = Policy {
                     dir: PathBuf::from(inbox_dir),
-                    max_size: 500 << 20,
+                    max_size: ask_above_bytes,
                     accept_large: false,
                 };
                 let conn = s.conn.clone();
+                let ask = |large: Vec<Item>| self.ask_large(transfer, large);
                 let (items, res) = self
-                    .observed(&conn, true, s.receive_keep(&policy, |_| true))
+                    .observed(&conn, true, s.receive_keep_asking(&policy, |_| true, ask))
                     .await;
                 // Items saved before a cancel or an error stay (§8.4): hand
                 // them to the app; report the error only if nothing arrived.

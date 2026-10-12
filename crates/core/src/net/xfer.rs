@@ -110,10 +110,19 @@ pub struct Received {
 #[derive(Debug, Clone)]
 pub struct Policy {
     pub dir: PathBuf,
-    /// Items above this size are declined unless `accept_large` is set (default 500 MB).
+    /// Items above this size need the user's consent (§8.4, default 500 MB):
+    /// see [`Session::receive_keep_asking`]. Without a way to ask they are
+    /// declined unless `accept_large` is set.
     pub max_size: u64,
     pub accept_large: bool,
 }
+
+/// How long the sender waits for the answer to its `Offer` (§8.4): longer than
+/// [`IDLE_TIMEOUT`] because the receiver may be asking its user.
+pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long the receiver's question about large items stays open (§8.4);
+/// below [`ANSWER_TIMEOUT`] so the sender still gets a `Decline`.
+pub const ASK_TIMEOUT: Duration = Duration::from_secs(110);
 
 /// Bytes moved so far in one transfer (item data only; inline text is free).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -435,7 +444,11 @@ impl Session {
     }
 
     pub async fn recv_ctrl(&mut self) -> Result<Ctrl, NetError> {
-        let ct = read_frame(&mut self.recv, MAX_FRAME, IDLE_TIMEOUT).await?;
+        self.recv_ctrl_within(IDLE_TIMEOUT).await
+    }
+
+    async fn recv_ctrl_within(&mut self, timeout: Duration) -> Result<Ctrl, NetError> {
+        let ct = read_frame(&mut self.recv, MAX_FRAME, timeout).await?;
         let pt = self.rx.open(&ct)?;
         Ok(Ctrl::parse(&pt)?)
     }
@@ -542,7 +555,7 @@ impl Session {
             items: items.iter().map(|o| o.item.clone()).collect(),
         };
         self.send_ctrl(&offer).await?;
-        let accepted = match self.recv_ctrl().await? {
+        let accepted = match self.recv_ctrl_within(ANSWER_TIMEOUT).await? {
             Ctrl::Accept { ids } => ids,
             Ctrl::Decline { reason } => {
                 close(&self.conn, code::DECLINED);
@@ -670,32 +683,70 @@ impl Session {
         policy: &Policy,
         decide: impl FnMut(&Item) -> bool,
     ) -> (Vec<Received>, Result<(), NetError>) {
+        self.receive_keep_asking(policy, decide, |_| std::future::ready(None))
+            .await
+    }
+
+    /// Like [`Session::receive_keep`], but items above `policy.max_size` are
+    /// put to the user (§8.4): `ask` gets them and resolves to the user's
+    /// answer, or `None` if it can't ask. It is dropped (the question
+    /// withdrawn) after [`ASK_TIMEOUT`] or when either side cancels.
+    pub async fn receive_keep_asking<F>(
+        self,
+        policy: &Policy,
+        decide: impl FnMut(&Item) -> bool,
+        ask: impl FnOnce(Vec<Item>) -> F,
+    ) -> (Vec<Received>, Result<(), NetError>)
+    where
+        F: Future<Output = Option<bool>>,
+    {
         let (conn, cancel) = (self.conn.clone(), self.cancel.clone());
         let mut out = Vec::new();
         let res = self
-            .receive_inner(policy, decide, &mut out)
+            .receive_inner(policy, decide, ask, &mut out)
             .await
             .map_err(|e| outcome(&conn, cancel.as_ref(), e));
         (out, res)
     }
 
-    async fn receive_inner(
+    async fn receive_inner<F: Future<Output = Option<bool>>>(
         mut self,
         policy: &Policy,
         mut decide: impl FnMut(&Item) -> bool,
+        ask: impl FnOnce(Vec<Item>) -> F,
         out: &mut Vec<Received>,
     ) -> Result<(), NetError> {
         let Ctrl::Offer { items, .. } = self.recv_ctrl().await? else {
             return Err(self.fail(NetError::Xfer(xfer::XferError::Shape)));
         };
+        let large: Vec<Item> = items
+            .iter()
+            .filter(|i| i.size > policy.max_size)
+            .cloned()
+            .collect();
+        // None: no answer in time, or no way to ask.
+        let consent = if large.is_empty() || policy.accept_large {
+            Some(true)
+        } else {
+            tokio::select! {
+                r = tokio::time::timeout(ASK_TIMEOUT, ask(large)) => r.ok().flatten(),
+                // The sender gave up or either side cancelled (a cancel closes the connection).
+                _ = self.conn.closed() => return Err(NetError::Stream("closed")),
+            }
+        };
+        let large_ok = consent == Some(true);
         let ids: Vec<u32> = items
             .iter()
-            .filter(|i| (i.size <= policy.max_size || policy.accept_large) && decide(i))
+            .filter(|i| (i.size <= policy.max_size || large_ok) && decide(i))
             .map(|i| i.id)
             .collect();
         if ids.is_empty() {
-            let reason = if items.iter().any(|i| i.size > policy.max_size) {
-                decline::TOO_LARGE
+            let reason = if !large_ok && items.iter().any(|i| i.size > policy.max_size) {
+                if consent.is_some() {
+                    decline::USER
+                } else {
+                    decline::TOO_LARGE
+                }
             } else {
                 decline::USER
             };
