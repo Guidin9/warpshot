@@ -36,6 +36,11 @@ mod android;
 #[derive(Debug, uniffi::Error)]
 pub enum WarpError {
     NotPaired,
+    /// Server denies group access; keep trust history for explicit QR recovery.
+    GroupUnavailable,
+    /// The PC refused pairing: this device was removed as lost or stolen, so
+    /// it can pair again only with a new identity (protocol §4.3, §5.3).
+    Revoked,
     Storage,
     Invalid,
     Rejected,
@@ -62,6 +67,13 @@ impl std::error::Error for WarpError {}
 impl From<NetError> for WarpError {
     fn from(e: NetError) -> Self {
         match e {
+            NetError::Server(warpshot_core::client::ClientError::Server {
+                code:
+                    warpshot_core::client::ErrorCode::NotMember
+                    | warpshot_core::client::ErrorCode::NoGroup,
+                ..
+            }) => WarpError::GroupUnavailable,
+            NetError::Closed(warpshot_core::xfer::code::PAIR_REVOKED) => WarpError::Revoked,
             NetError::Server(c) => WarpError::Server {
                 code: c.to_string(),
             },
@@ -903,7 +915,10 @@ impl Warpshot {
     }
 
     async fn is_paired_impl(&self) -> bool {
-        self.dev.lock().await.log.is_some()
+        let dev = self.dev.lock().await;
+        dev.log
+            .as_ref()
+            .is_some_and(|l| l.is_member(&dev.id()) && l.members().len() > 1)
     }
 
     async fn devices_impl(&self) -> Vec<DeviceEntry> {
@@ -1180,5 +1195,38 @@ impl Warpshot {
         } else {
             Err(WarpError::Rejected)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use warpshot_core::{
+        client::{ClientError, ErrorCode},
+        xfer::code,
+    };
+
+    use super::*;
+
+    #[test]
+    fn errors_the_app_acts_on() {
+        // The PC's refusal of a revoked phone drives Android's reset offer.
+        assert!(matches!(
+            WarpError::from(NetError::Closed(code::PAIR_REVOKED)),
+            WarpError::Revoked
+        ));
+        assert!(matches!(
+            WarpError::from(NetError::Closed(code::PAIR_OTHER_GROUP)),
+            WarpError::Network {
+                code: code::PAIR_OTHER_GROUP
+            }
+        ));
+        let denied = ClientError::Server {
+            status: 403,
+            code: ErrorCode::NotMember,
+        };
+        assert!(matches!(
+            WarpError::from(NetError::Server(denied)),
+            WarpError::GroupUnavailable
+        ));
     }
 }

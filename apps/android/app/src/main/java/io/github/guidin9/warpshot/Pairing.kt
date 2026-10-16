@@ -20,7 +20,9 @@ sealed interface PairState {
     /** The core asks whether both screens show [sas]; answered with [Pairing.answer]. */
     data class Confirm(val sas: String, val peer: String, val answer: CompletableFuture<Boolean>) : PairState
     data class Done(val peer: String) : PairState
-    data class Failed(val message: String) : PairState
+
+    /** [reset]: this phone's key is revoked; only a reset (new identity) helps. */
+    data class Failed(val message: String, val reset: Boolean = false) : PairState
 }
 
 /**
@@ -59,6 +61,8 @@ object Pairing {
                 runCatching { core.sync() }
                 val name = runCatching { core.devices() }.getOrNull()?.firstOrNull { it.id == pc }?.name
                 PairState.Done(name ?: app.getString(R.string.your_pc))
+            } catch (e: WarpException.Revoked) {
+                PairState.Failed(app.getString(R.string.pair_err_revoked), reset = true)
             } catch (e: Exception) {
                 PairState.Failed(pairError(app, e))
             }

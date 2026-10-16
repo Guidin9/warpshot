@@ -142,13 +142,16 @@ and head id `H`. Record `R` at position `n` is valid **iff all** hold:
 3. `created_at ≤ now + 10 min`, and for `n > 0` also `created_at ≥ created_at(n-1) − 10 min`.
    Order comes from `seq`, not from time.
 4. Operation rules:
-   - `add`: `subject ∉ S`, `device` present, `subject` is a valid Ed25519 public key that is not of small order. Re-adding a previously removed key is a new admission and is allowed.
+   - `add`: `subject ∉ S`, `subject ∉ R`, `device` present, `subject` is a valid Ed25519 public key that is not of small order. Re-adding a key removed for reason 0, 2 or 3 is a new admission and is allowed.
    - `remove`: `subject ∈ S`. A member may remove itself (leave).
    - `update`: `signer == subject`, `device` present, `device.platform` unchanged (rename or KEM key rotation).
 5. `Ed25519.VerifyStrict(signer, "warpshot/record/v1\0" ‖ body, sig)` succeeds.
 
 State transition: `genesis`/`add`/`update` set `S[subject] = device`; `remove`
-deletes `S[subject]`. When `S` becomes empty the group is dead and no further
+deletes `S[subject]`, and a `remove` with reason 1 (lost-or-stolen) also adds
+`subject` to the revoked set `R` (empty at genesis). A key in `R` is revoked for
+good: its private key may be in someone else's hands, so the device can return
+only with a new identity (new keys, a fresh pairing as a new device). When `S` becomes empty the group is dead and no further
 record is valid. Limits: at most 16 members and 1024 records (§10); an `add`
 that would make a 17th member is invalid.
 
@@ -228,6 +231,10 @@ are sufficient.
    If both devices are in groups and the groups differ (last row of the table in
    step 7), D closes with `PAIR_OTHER_GROUP` now: no SAS is shown for a pairing
    that cannot complete.
+   If D's verified log has the scanner's `EndpointId` in `R` (§4.3), D closes with
+   `PAIR_REVOKED` now, for the same reason. The scanner tells the user that this
+   device was removed as lost or stolen and can pair again only after a reset
+   (new identity).
 5. D → S `PairInfo { 0: device DeviceInfo, 1: group bstr16?, 2: head LogHead? }`.
 6. Both screens show the SAS: the first 6 characters of
    `BASE32(SHA-256("warpshot/sas/v1" ‖ ekm))`, formatted `XXX-XXX`, together
@@ -243,6 +250,22 @@ are sufficient.
    | none | in H | scanner | `add(display)` to H |
    | in G | in G | — | already paired: refresh `DeviceInfo` via `update` if changed |
    | in G | in H ≠ G | — | close `PAIR_OTHER_GROUP` ("leave the other group first") |
+
+   Equal group ids alone do not prove current membership. After both SAS
+   confirmations, if the display's verified log still contains the display but
+   no longer contains the scanner, the display appends a fresh `add(scanner)`
+   (§4.3), submits it, then sends the resulting log. A removed display MUST NOT
+   act as appender. No readmission happens without both confirmations. The
+   display refreshes its log before opening the pairing window; failures abort
+   that window. A receiver with a local log requires `PairDone` to extend that
+   exact log (same group and identical record prefix); rollback and forks fail.
+   A scanner whose key is in the display's revoked set `R` never reaches this
+   step (step 4). Recovery cases are in `test-vectors/pair-recovery.json`.
+
+   A server `not-member` response is an availability hint, not proof of removal:
+   clients keep the verified log and keys, explain that group access failed,
+   and offer QR pairing again. They MUST NOT erase trust history or admit peers
+   based on that response.
 
 8. The appender submits to the server (§4.4), then sends `PairDone { 0: records [bstr] }`
    with the full log. The other side validates the log from genesis, stores it,
@@ -595,6 +618,7 @@ admission (§8.1) is checked again.
 | 0x22 | CRYPTO | 0x40 | DIRECT_UNAVAILABLE |
 | 0x23 | PROTOCOL | 0x50 | TIMEOUT |
 | 0x24 | PAIR_PROOF | 0x33 | CANCELLED |
+| | | 0x28 | PAIR_REVOKED |
 | | | 0x7F | INTERNAL |
 
 ## 9. Endpoint and connection policy

@@ -74,13 +74,14 @@ export function DevicesPage() {
                   {!d.me && (
                     <>
                       {" · "}
-                      <span className={`presence ${d.online ? "online" : ""}`}>
+                      <span className={`presence ${d.online || d.push ? "online" : ""}`}>
                         <span className="dot" />
                         {d.online
                           ? t("devices.online")
-                          : d.last_seen
-                            ? t("devices.offline", { when: relativeTime(d.last_seen) })
-                            : t("devices.never")}
+                          : d.push
+                            ? t("devices.push")
+                            : t("devices.unreachable")}
+                        {!d.online && d.last_seen && ` · ${t("devices.offline", { when: relativeTime(d.last_seen) })}`}
                       </span>
                     </>
                   )}

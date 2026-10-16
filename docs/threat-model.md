@@ -63,6 +63,17 @@ request; `last_seen` with 60 s granularity; default device names are generic
 
 ## 5. Accepted residual risks
 
+Pairing recovery preserves the verified log prefix: an old QR exchange cannot
+roll back a known removal or replace the group with a fork. Readmission of a
+removed phone requires a fresh QR, both SAS confirmations, and a signed add by
+a current member accepted by the server. Server access-denial errors only
+change recovery UI; they do not delete keys/logs or establish membership.
+A device removed as lost or stolen is never readmitted with the same key: its
+key goes into the log's revoked set (protocol §4.3), which every client and the
+server enforce, so neither a thief who extracted the key nor a careless member
+can bring it back. The recovered phone must reset (new identity) and pair as a
+new device.
+
 1. Traffic analysis (sizes and timing). Padding small items to fixed buckets is a candidate for Faz 2.
 2. DoS by the server, relay or push provider. The design detects equivocation; it does not prevent DoS.
 3. Device names and the group structure are visible to the server.

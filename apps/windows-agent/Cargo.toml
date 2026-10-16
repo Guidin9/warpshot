@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# Opt-in isolated release instance for resource measurements; never a shipping build.
+test-instance = []
+
 # Copy of `[workspace.lints]` (keep in sync), except `unsafe_code`: the workspace
 # forbids it, and a `forbid` cannot be relaxed with `#![allow]`, while Win32 FFI
 # needs `unsafe`. Cargo has no partial override of workspace lints, so this crate

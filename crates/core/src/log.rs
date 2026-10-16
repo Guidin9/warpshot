@@ -1,7 +1,10 @@
 //! Group membership log (protocol §4): signed, hash-chained records, the
 //! normative validation of §4.3, state, append helpers and fork detection.
 
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use sha2::{Digest, Sha256};
 
@@ -252,6 +255,8 @@ pub enum LogError {
     TimeFuture,
     TimeRegress,
     AddExisting,
+    /// `add` of a key removed as lost or stolen (§4.3 set `R`).
+    AddRevoked,
     SubjectKey,
     RemoveMissing,
     UpdateNotSelf,
@@ -345,6 +350,8 @@ pub struct Log {
     group_id: GroupId,
     records: Vec<Record>,
     members: BTreeMap<EndpointId, DeviceInfo>,
+    /// Keys removed as lost or stolen: never valid as an `add` subject again.
+    revoked: BTreeSet<EndpointId>,
 }
 
 impl Log {
@@ -353,6 +360,7 @@ impl Log {
             group_id,
             records: Vec::new(),
             members: BTreeMap::new(),
+            revoked: BTreeSet::new(),
         }
     }
 
@@ -383,6 +391,11 @@ impl Log {
 
     pub fn is_member(&self, id: &EndpointId) -> bool {
         self.members.contains_key(id)
+    }
+
+    /// The key was removed as lost or stolen; it can never be added again.
+    pub fn is_revoked(&self, id: &EndpointId) -> bool {
+        self.revoked.contains(id)
     }
 
     pub fn head(&self) -> Option<Head> {
@@ -421,8 +434,11 @@ impl Log {
             Op::Genesis(d) | Op::Add(d) | Op::Update(d) => {
                 self.members.insert(rec.body.subject, d.clone());
             }
-            Op::Remove(_) => {
+            Op::Remove(reason) => {
                 self.members.remove(&rec.body.subject);
+                if *reason == RemoveReason::LostOrStolen {
+                    self.revoked.insert(rec.body.subject);
+                }
             }
         }
         self.records.push(rec);
@@ -484,6 +500,9 @@ impl Log {
             Op::Add(_) => {
                 if self.members.contains_key(&body.subject) {
                     return Err(LogError::AddExisting);
+                }
+                if self.revoked.contains(&body.subject) {
+                    return Err(LogError::AddRevoked);
                 }
                 if !is_valid_public_key(&body.subject) {
                     return Err(LogError::SubjectKey);
@@ -583,13 +602,11 @@ pub(crate) mod tests {
         let r = sign_record(&b, &body(&log, &b, Op::Update(dev("my phone", 2, 3)), 2));
         log.append(&r, T0).unwrap();
         assert_eq!(log.members()[&b.endpoint_id()].name, "my phone");
-        let r = sign_record(
-            &a,
-            &body(&log, &b, Op::Remove(RemoveReason::LostOrStolen), 3),
-        );
+        let r = sign_record(&a, &body(&log, &b, Op::Remove(RemoveReason::User), 3));
         log.append(&r, T0).unwrap();
         assert!(!log.is_member(&b.endpoint_id()));
-        // Re-adding a removed key is a new admission.
+        assert!(!log.is_revoked(&b.endpoint_id()));
+        // Re-adding a key removed for any reason but lost-or-stolen is a new admission.
         let r = sign_record(&a, &body(&log, &b, Op::Add(dev("phone", 2, 4)), 4));
         log.append(&r, T0).unwrap();
         assert_eq!(log.head().unwrap().seq, 4);
@@ -602,6 +619,31 @@ pub(crate) mod tests {
 
     fn err(log: &Log, raw: &[u8]) -> LogError {
         log.check(raw, T0).unwrap_err()
+    }
+
+    #[test]
+    fn lost_or_stolen_key_is_revoked_for_good() {
+        let (mut log, a) = genesis_log();
+        let b = key(2);
+        let r = sign_record(&a, &body(&log, &b, Op::Add(dev("phone", 2, 2)), 1));
+        log.append(&r, T0).unwrap();
+        let r = sign_record(
+            &a,
+            &body(&log, &b, Op::Remove(RemoveReason::LostOrStolen), 2),
+        );
+        log.append(&r, T0).unwrap();
+        assert!(log.is_revoked(&b.endpoint_id()));
+        let readd = sign_record(&a, &body(&log, &b, Op::Add(dev("phone", 2, 3)), 3));
+        assert_eq!(err(&log, &readd), LogError::AddRevoked);
+        // The state survives a full re-validation from genesis.
+        let raws: Vec<&[u8]> = log.records().iter().map(|r| r.raw.as_slice()).collect();
+        let again = Log::from_records(G, raws, T0).unwrap();
+        assert_eq!(err(&again, &readd), LogError::AddRevoked);
+        // A new identity for the same phone is an ordinary admission.
+        let c = key(3);
+        let r = sign_record(&a, &body(&log, &c, Op::Add(dev("phone", 2, 4)), 3));
+        log.append(&r, T0).unwrap();
+        assert!(log.is_member(&c.endpoint_id()));
     }
 
     #[test]

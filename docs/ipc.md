@@ -23,7 +23,7 @@ The agent owns all state, keys and network access; the UI holds none of them.
 | Method | Params | Result |
 |---|---|---|
 | `status` | – | `{device: {id, name, platform}, paired: bool, server: "connected" \| "connecting" \| "offline", version}` |
-| `devices.list` | – | `[{id, name, platform, me, online, last_seen, push, default_target}]` (`push`: the server holds a push token, so the device can be woken) |
+| `devices.list` | – | `[{id, name, platform, me, online, last_seen, push, default_target}]` (refreshes presence on demand when the server is connected, waiting at most 3 s, else answers with the last known presence; `push`: the server holds a push token, so notification delivery can be attempted, not guaranteed) |
 | `devices.rename` | `{name}` (own device; appends `update`) | `{}` |
 | `devices.remove` | `{id, reason: "user" \| "lost-or-stolen" \| "not-me"}` | `{}` |
 | `devices.set_default` | `{id}` | `{}` |
@@ -62,7 +62,7 @@ offer). `waiting`: queued, or waiting for the woken device to answer;
 | `status` | same shape as the `status` result, sent on change |
 | `pair.sas` | `{sas, peer_name, peer_platform}` — show it and ask the user (`pair.confirm`) |
 | `pair.done` | `{peer_id}` |
-| `pair.failed` | `{code: "expired" \| "proof" \| "rejected" \| "other-group" \| "network"}` |
+| `pair.failed` | `{code: "expired" \| "proof" \| "rejected" \| "other-group" \| "revoked" \| "network"}`; `revoked`: the phone was removed as lost or stolen (protocol §4.3) and must reset |
 | `transfer.started` | `Transfer` — a send or receive began (state `waiting`) |
 | `transfer.progress` | `{transfer, done_bytes, total_bytes, bytes_per_sec}` — the first one (`done_bytes: 0`) means `running`; then at most 4 per second, and one at the end |
 | `transfer.done` | `{transfer, ok, code?}` — `code`: `cancelled` (here or on the other device; no toast), `offline`, `no-answer`, `declined` (the receiver's user said no), `not-accepted` (above the receiver's size limit and not confirmed in time, protocol §8.4), `rejected`, `timeout`, `network`, ... |

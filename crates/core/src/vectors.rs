@@ -150,6 +150,9 @@ fn raw_record(ik: &IdentityKey, entries: Vec<(u64, Value<'_>)>) -> Vec<u8> {
 fn record_vectors() -> J {
     let k = |s: u8| IdentityKey::from_secret(&[s; 32]);
     let (a, b, c) = (k(0xa1), k(0xb2), k(0xc3));
+    // D is never in the log: the subject of `add` vectors that test other rules
+    // (C is revoked, so adding C fails with AddRevoked).
+    let dk = k(0xd4);
     let mut log = Log::new(GroupId(GROUP));
     let mut valid = Vec::new();
     let mut push = |log: &mut Log, raw: Vec<u8>, what: &str| {
@@ -214,20 +217,20 @@ fn record_vectors() -> J {
             ),
         ])
     };
-    let cid = c.endpoint_id().0;
+    let did = dk.endpoint_id().0;
     let bid = b.endpoint_id().0;
 
-    let mut bd = body(&log, &c, Op::Add(d.clone()), 5000);
+    let mut bd = body(&log, &dk, Op::Add(d.clone()), 5000);
     bd.group_id = GroupId([0x48; 16]);
     bad(
         "wrong group_id",
         sign_record(&a, &bd),
         LogError::GroupMismatch,
     );
-    let mut bd = body(&log, &c, Op::Add(d.clone()), 5000);
+    let mut bd = body(&log, &dk, Op::Add(d.clone()), 5000);
     bd.seq = n + 1;
     bad("seq skips one", sign_record(&a, &bd), LogError::SeqMismatch);
-    let mut bd = body(&log, &c, Op::Add(d.clone()), 5000);
+    let mut bd = body(&log, &dk, Op::Add(d.clone()), 5000);
     bd.prev = Some(log::RecordId([0; 32]));
     bad(
         "prev is not the head",
@@ -236,25 +239,30 @@ fn record_vectors() -> J {
     );
     bad(
         "second genesis",
-        sign_record(&a, &body(&log, &c, Op::Genesis(d.clone()), 5000)),
+        sign_record(&a, &body(&log, &dk, Op::Genesis(d.clone()), 5000)),
         LogError::NotGenesisOp,
     );
     bad(
         "signer was removed",
-        sign_record(&c, &body(&log, &c, Op::Add(d.clone()), 5000)),
+        sign_record(&c, &body(&log, &dk, Op::Add(d.clone()), 5000)),
         LogError::SignerNotMember,
     );
     bad(
         "created_at too far in the future",
-        sign_record(&a, &body(&log, &c, Op::Add(d.clone()), 11 * 60 * 1000)),
+        sign_record(&a, &body(&log, &dk, Op::Add(d.clone()), 11 * 60 * 1000)),
         LogError::TimeFuture,
     );
-    let mut bd = body(&log, &c, Op::Add(d.clone()), 0);
+    let mut bd = body(&log, &dk, Op::Add(d.clone()), 0);
     bd.created_at = NOW + 4000 - 10 * 60 * 1000 - 1;
     bad(
         "created_at regresses more than 10 min",
         sign_record(&a, &bd),
         LogError::TimeRegress,
+    );
+    bad(
+        "re-add a key removed as lost or stolen",
+        sign_record(&a, &body(&log, &c, Op::Add(d.clone()), 5000)),
+        LogError::AddRevoked,
     );
     bad(
         "add an existing member",
@@ -276,13 +284,13 @@ fn record_vectors() -> J {
         sign_record(&b, &body(&log, &b, Op::Update(dev("x", 1, 6)), 5000)),
         LogError::UpdatePlatform,
     );
-    let mut raw = sign_record(&a, &body(&log, &c, Op::Add(d.clone()), 5000));
+    let mut raw = sign_record(&a, &body(&log, &dk, Op::Add(d.clone()), 5000));
     let last = raw.len() - 1;
     raw[last] ^= 0x01;
     bad("signature bit flipped", raw, LogError::BadSignature);
     bad(
         "add without device",
-        raw_record(&a, base(1, vec![], n, cid)),
+        raw_record(&a, base(1, vec![], n, did)),
         LogError::Presence,
     );
     bad(
@@ -302,30 +310,30 @@ fn record_vectors() -> J {
         "add with reason",
         raw_record(
             &a,
-            base(1, vec![(7, dmap(&d)), (8, Value::Uint(0))], n, cid),
+            base(1, vec![(7, dmap(&d)), (8, Value::Uint(0))], n, did),
         ),
         LogError::Presence,
     );
     bad(
         "op 4",
-        raw_record(&a, base(4, vec![], n, cid)),
+        raw_record(&a, base(4, vec![], n, did)),
         LogError::UnknownOp,
     );
     bad(
         "device name empty",
-        raw_record(&a, base(1, vec![(7, dmap(&dev("", 2, 5)))], n, cid)),
+        raw_record(&a, base(1, vec![(7, dmap(&dev("", 2, 5)))], n, did)),
         LogError::DeviceName,
     );
     bad(
         "device name with control char",
-        raw_record(&a, base(1, vec![(7, dmap(&dev("a\nb", 2, 5)))], n, cid)),
+        raw_record(&a, base(1, vec![(7, dmap(&dev("a\nb", 2, 5)))], n, did)),
         LogError::DeviceName,
     );
     bad(
         "device name 65 bytes",
         raw_record(
             &a,
-            base(1, vec![(7, dmap(&dev(&"n".repeat(65), 2, 5)))], n, cid),
+            base(1, vec![(7, dmap(&dev(&"n".repeat(65), 2, 5)))], n, did),
         ),
         LogError::DeviceName,
     );
@@ -333,7 +341,7 @@ fn record_vectors() -> J {
         "device name with bidi override U+202E",
         raw_record(
             &a,
-            base(1, vec![(7, dmap(&dev("pc\u{202E}evil", 2, 5)))], n, cid),
+            base(1, vec![(7, dmap(&dev("pc\u{202E}evil", 2, 5)))], n, did),
         ),
         LogError::DeviceName,
     );
@@ -346,17 +354,17 @@ fn record_vectors() -> J {
     );
     bad(
         "platform 0",
-        raw_record(&a, base(1, vec![(7, dmap(&dev("t", 0, 5)))], n, cid)),
+        raw_record(&a, base(1, vec![(7, dmap(&dev("t", 0, 5)))], n, did)),
         LogError::DevicePlatform,
     );
     let mut short = d.clone();
     short.kem_pk.pop();
     bad(
         "kem_pk 1215 bytes",
-        raw_record(&a, base(1, vec![(7, dmap(&short))], n, cid)),
+        raw_record(&a, base(1, vec![(7, dmap(&short))], n, did)),
         LogError::DeviceKemKey,
     );
-    let mut v = base(1, vec![(7, dmap(&d))], n, cid);
+    let mut v = base(1, vec![(7, dmap(&d))], n, did);
     v[0] = (0, Value::Uint(2));
     bad("record version 2", raw_record(&a, v), LogError::Version);
 
@@ -367,7 +375,7 @@ fn record_vectors() -> J {
         _ => unreachable!(),
     };
     fut.push((9, Value::Text("unknown key")));
-    let r = raw_record(&a, base(1, vec![(7, Value::Map(fut))], n, cid));
+    let r = raw_record(&a, base(1, vec![(7, Value::Map(fut))], n, did));
     log.check(&r, NOW).unwrap();
     accept.push(json!({ "name": "unknown platform 77 and an unknown DeviceInfo key", "prefix": prefix, "record": hex(&r) }));
     let r = sign_record(&b, &body(&log, &b, Op::Remove(RemoveReason::Left), 5000));
@@ -384,6 +392,7 @@ fn record_vectors() -> J {
             { "name": "A", "secret": hex(&[0xa1; 32]), "endpoint_id": hex(&a.endpoint_id().0) },
             { "name": "B", "secret": hex(&[0xb2; 32]), "endpoint_id": hex(&b.endpoint_id().0) },
             { "name": "C", "secret": hex(&[0xc3; 32]), "endpoint_id": hex(&c.endpoint_id().0) },
+            { "name": "D", "secret": hex(&[0xd4; 32]), "endpoint_id": hex(&dk.endpoint_id().0) },
         ],
         "valid": valid,
         "members_after_valid": members,

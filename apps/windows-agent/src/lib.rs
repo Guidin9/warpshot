@@ -31,12 +31,12 @@ pub mod toast;
 pub mod tray;
 pub mod win;
 
-/// Debug builds only: `WARPSHOT_INSTANCE=<name>` runs a separate test agent
+/// Debug or `test-instance` builds: `WARPSHOT_INSTANCE=<name>` runs a test agent
 /// next to the user's real one, with its own mutex and pipe names and no tray
-/// icon, hotkey, toasts or flyouts (scripts/e2e-agent.mjs). Release builds
+/// icon, hotkey, toasts or flyouts (scripts/e2e-agent.mjs). Normal release builds
 /// ignore the variable.
 pub fn test_instance() -> Option<String> {
-    if !cfg!(debug_assertions) {
+    if !cfg!(any(debug_assertions, feature = "test-instance")) {
         return None;
     }
     std::env::var("WARPSHOT_INSTANCE")

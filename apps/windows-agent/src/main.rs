@@ -159,7 +159,10 @@ fn on_ui_msg(hwnd: HWND, msg: UiMsg) {
     if warpshot_agent::test_instance().is_some()
         && matches!(
             msg,
-            UiMsg::Toast { .. } | UiMsg::Flyout { .. } | UiMsg::Hotkey(_)
+            UiMsg::Toast { .. }
+                | UiMsg::Flyout { .. }
+                | UiMsg::FlyoutProgress(_)
+                | UiMsg::Hotkey(_)
         )
     {
         return;
@@ -180,6 +183,11 @@ fn on_ui_msg(hwnd: HWND, msg: UiMsg) {
             let _ = clipboard::write_files(hwnd, &paths);
         }
         UiMsg::Flyout { text, tone } => osd::show(&text, tone),
+        UiMsg::FlyoutProgress(p) => {
+            osd::show_progress(&p);
+            // Up to four a second while bytes flow: trim when the send ends.
+            return;
+        }
         UiMsg::Menu(m) => {
             with_app(|a| {
                 let transfers = std::mem::take(&mut a.menu.transfers);
@@ -506,21 +514,56 @@ fn main() -> ExitCode {
             let dir = args
                 .get(1)
                 .map_or_else(|| std::path::PathBuf::from("."), Into::into);
+            let p = osd::SendProgress {
+                peer: "S21 FE".into(),
+                done: 12_300_000,
+                total: 30_000_000,
+                bytes_per_sec: 5_100_000,
+            };
+            let bar = |stalled| {
+                Some(osd::Bar {
+                    permille: 410,
+                    stalled,
+                })
+            };
             let states = [
                 (
                     "busy",
-                    "Sending to Mert adlı kişiye ait S21 FE…",
+                    "Sending to Mert adlı kişiye ait S21 FE…".to_owned(),
                     osd::Tone::Busy,
+                    None,
                 ),
-                ("ok", "Sent to Mert adlı kişiye ait S21 FE", osd::Tone::Ok),
-                ("error", "Not sent: device offline", osd::Tone::Error),
+                (
+                    "progress",
+                    osd::progress_text(&p, None),
+                    osd::Tone::Busy,
+                    bar(false),
+                ),
+                (
+                    "stalled",
+                    osd::progress_text(&p, Some(std::time::Duration::from_secs(7))),
+                    osd::Tone::Busy,
+                    bar(true),
+                ),
+                (
+                    "ok",
+                    "Sent to Mert adlı kişiye ait S21 FE".to_owned(),
+                    osd::Tone::Ok,
+                    None,
+                ),
+                (
+                    "error",
+                    "Not sent: device offline".to_owned(),
+                    osd::Tone::Error,
+                    None,
+                ),
             ];
             let mut n = 0u32;
-            for (name, text, tone) in states {
+            for (name, text, tone, bar) in &states {
                 for (theme, dark) in [("light", false), ("dark", true)] {
                     for dpi in [96, 144] {
                         let file = dir.join(format!("flyout-{name}-{theme}-{dpi}.png"));
-                        if let Some(png) = osd::render_png(text, tone, dark, dpi)
+                        if let Some(png) = osd::render_png(text, *tone, *bar, dark, dpi)
                             && std::fs::write(&file, png).is_ok()
                         {
                             n = n.saturating_add(1);

@@ -119,9 +119,15 @@ in `server\`, run `cargo build -p warpshot-agent` and
 `cargo build -p warpshot-ffi --example phone_sim` (one command with both would
 build only the example), then
 `node scripts\e2e-agent.mjs`.
+For an isolated release resource check without stopping the installed agent:
+`cargo build --release -p warpshot-agent --features test-instance`, then run the
+same harness with `E2E_PROFILE=release` and `E2E_KEEP_AGENT=1`. Measure its printed
+PID with `measure-idle.ps1`; stop only that test PID afterwards. The opt-in
+`test-instance` feature enables the existing isolated pipe/mutex and suppresses
+desktop effects. Normal release builds ignore `WARPSHOT_INSTANCE`.
 Traffic check (nothing readable by the server or FCM carries content, names
 or addresses; starts its own server on ports 8797–8799, same two builds):
-`node scripts	raffic-check.mjs`.
+`node scripts\traffic-check.mjs`.
 Long fuzzing (each decoder's target, in parallel; `WARPSHOT_FUZZ_SECS` per target):
 `$env:WARPSHOT_FUZZ_SECS=600; cargo test -p warpshot-core --release --lib fuzz_long -- --ignored --nocapture`;
 server: `$env:FUZZ_N=50000; npm test -- fuzz` in `server\`.

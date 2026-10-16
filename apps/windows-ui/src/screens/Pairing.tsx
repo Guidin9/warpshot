@@ -85,6 +85,7 @@ const FAILED_KEYS: Record<string, Key> = {
   proof: "pair.failed.proof",
   rejected: "pair.failed.rejected",
   "other-group": "pair.failed.other-group",
+  revoked: "pair.failed.revoked",
   network: "pair.failed.network",
 };
 

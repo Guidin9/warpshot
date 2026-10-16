@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { b64uEncode } from "../src/b64u";
 import {
+  applyTrusted,
   DeviceInfo,
   emptyState,
   LogState,
@@ -156,15 +157,27 @@ describe("record decoding (§4.2, rule 1)", () => {
 });
 
 describe("§4.3 rules", () => {
-  it("valid genesis, add, update, remove; re-add of a removed key is allowed", async () => {
+  it("valid genesis, add, update, remove; re-add of a key removed by the user is allowed", async () => {
     const { A, B, gid, s1 } = await base();
     const s2 = await apply(s1.state, { ...updateBody(gid, 2, s1.id, B, "B2", 2), 4: NOW }, B);
     expect((s2.state.members.get(B.id) as DeviceInfo).name).toBe("B2");
-    const s3 = await apply(s2.state, { ...removeBody(gid, 3, s2.id, B, 1), 4: NOW }, A);
+    const s3 = await apply(s2.state, { ...removeBody(gid, 3, s2.id, B, 0), 4: NOW }, A);
     expect(s3.state.members.has(B.id)).toBe(false);
     const s4 = await apply(s3.state, { ...addBody(gid, 4, s3.id, B), 4: NOW }, A);
     expect(s4.state.members.has(B.id)).toBe(true);
     expect(s4.state.seq).toBe(4);
+  });
+
+  it("rule 4 add: a key removed as lost or stolen is revoked for good", async () => {
+    const { A, B, C, gid, s1 } = await base();
+    const s2 = await apply(s1.state, { ...removeBody(gid, 2, s1.id, B, 1), 4: NOW }, A);
+    expect(s2.state.revoked.has(B.id)).toBe(true);
+    expect(await ruleOf(apply(s2.state, { ...addBody(gid, 3, s2.id, B), 4: NOW }, A))).toBe("add");
+    // Rebuilding the state from storage keeps the revocation.
+    const rec = parseSignedRecord((await signRecord({ ...removeBody(gid, 2, s1.id, B, 1), 4: NOW }, A)).bytes);
+    expect(applyTrusted(s1.state, rec, s2.id).revoked.has(B.id)).toBe(true);
+    // A new key for the same device is an ordinary admission.
+    expect(await ruleOf(apply(s2.state, { ...addBody(gid, 3, s2.id, C), 4: NOW }, A))).toBeNull();
   });
 
   it("rule 1: v != 1", async () => {
@@ -296,7 +309,7 @@ describe("§4.3 rules", () => {
   it("limit: at most 1024 records (seq 1023 ok, seq 1024 rejected)", async () => {
     const { A, B, C, gid } = await base();
     const members = new Map<string, DeviceInfo>([[A.id, { name: "A", platform: 1, kemPk: kemPk(1) }]]);
-    const at = (seq: number): LogState => ({ groupId: gid, seq, headId: new Uint8Array(32).fill(9), lastCreatedAt: NOW, members });
+    const at = (seq: number): LogState => ({ groupId: gid, seq, headId: new Uint8Array(32).fill(9), lastCreatedAt: NOW, members, revoked: new Set() });
     const prev = new Uint8Array(32).fill(9);
     expect(await ruleOf(apply(at(1022), body(gid, 1023, prev, 1, B, { 7: deviceInfo("B") }), A))).toBeNull();
     expect(await ruleOf(apply(at(1023), body(gid, 1024, prev, 1, C, { 7: deviceInfo("C") }), A))).toBe("limit");

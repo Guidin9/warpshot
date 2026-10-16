@@ -105,6 +105,11 @@ fn main() {
     let stay = a[2] == "send-text-cancel-stdin";
     let res: Result<String, WarpError> = rt.block_on(async move {
         match a[2].as_str() {
+            "sync" => w2.sync().await.map(|()| "synced".into()),
+            "remove" => w2
+                .remove_device(a[3].clone(), false)
+                .await
+                .map(|()| "removed".into()),
             "pair" => w2.pair_scan(a[3].clone(), Arc::new(Yes)).await,
             "send-text" => w2
                 .send_text(a[3].clone(), a[4].clone(), 1)

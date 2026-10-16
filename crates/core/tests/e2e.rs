@@ -304,6 +304,18 @@ async fn pair_once(
     Result<net::pair::Paired, net::NetError>,
     Result<net::pair::Paired, net::NetError>,
 ) {
+    pair_once_confirm(disp, scan, true, true).await
+}
+
+async fn pair_once_confirm(
+    disp: &Device,
+    scan: &Device,
+    display_accepts: bool,
+    scanner_accepts: bool,
+) -> (
+    Result<net::pair::Paired, net::NetError>,
+    Result<net::pair::Paired, net::NetError>,
+) {
     let ep_d = net::bind(&disp.keys.ik, Relay::Disabled).await.unwrap();
     let ep_s = net::bind(&scan.keys.ik, Relay::Disabled).await.unwrap();
     let mut window = Window::open(
@@ -324,7 +336,7 @@ async fn pair_once(
                 &mut window,
                 disp,
                 now_ms(),
-                |_| async { true },
+                |_| async { display_accepts },
                 |_| async { Ok(()) },
             )
             .await
@@ -334,7 +346,7 @@ async fn pair_once(
             &qr,
             scan,
             now_ms(),
-            |_| async { true },
+            |_| async { scanner_accepts },
             |_| async { Ok(()) }
         )
     );
@@ -393,6 +405,73 @@ async fn pairing_resolution_table_all_rows() {
     );
     assert!(s.is_err());
     let _ = phone;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pairing_readmits_removed_phone_with_stale_log() {
+    use warpshot_core::log::{Op, RecordBody, RemoveReason, sign_record};
+    let vectors: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/test-vectors/pair-recovery.json"
+    ))
+    .unwrap();
+    for case in vectors["cases"].as_array().unwrap() {
+        let mut pc = Device::new("pc", platform::WINDOWS).unwrap();
+        let mut phone = Device::new("phone", platform::ANDROID).unwrap();
+        let (d, s) = pair_once(&pc, &phone).await;
+        pc.log = Some(d.unwrap().log);
+        phone.log = Some(s.unwrap().log);
+        let log = pc.log.as_mut().unwrap();
+        let (seq, prev) = log.next_position();
+        let reason = match case["reason"].as_u64().unwrap() {
+            0 => RemoveReason::User,
+            1 => RemoveReason::LostOrStolen,
+            3 => RemoveReason::NotMe,
+            _ => panic!("unknown recovery vector"),
+        };
+        let body = RecordBody {
+            group_id: log.group_id(),
+            seq,
+            prev,
+            created_at: now_ms(),
+            subject: phone.id(),
+            op: Op::Remove(reason),
+        };
+        log.append(&sign_record(&pc.keys.ik, &body), now_ms())
+            .unwrap();
+        assert!(!log.is_member(&phone.id()));
+        // A photographed QR or a refused confirmation must never undo revocation.
+        for (display_accepts, scanner_accepts) in [(false, true), (true, false)] {
+            let (d, s) = pair_once_confirm(&pc, &phone, display_accepts, scanner_accepts).await;
+            assert!(d.is_err() && s.is_err());
+            assert!(!pc.log.as_ref().unwrap().is_member(&phone.id()));
+        }
+        if case["expect"] == "revoked" {
+            // Refused before the SAS; only a new identity (a reset phone) gets in.
+            let revoked = net::NetError::Closed(warpshot_core::xfer::code::PAIR_REVOKED);
+            let (d, s) = pair_once(&pc, &phone).await;
+            assert_eq!(d.unwrap_err(), revoked);
+            assert_eq!(s.unwrap_err(), revoked);
+            let fresh = Device::new("phone", platform::ANDROID).unwrap();
+            let (d, s) = pair_once(&pc, &fresh).await;
+            let (d, s) = (d.unwrap(), s.unwrap());
+            assert_eq!(d.log.records().len(), 4);
+            assert_eq!(d.log.head(), s.log.head());
+            assert!(s.log.is_member(&fresh.id()) && !s.log.is_member(&phone.id()));
+            assert!(s.log.is_revoked(&phone.id()));
+            continue;
+        }
+        assert_eq!(case["expect"], "readmit");
+        let (d, s) = pair_once(&pc, &phone).await;
+        let d = d.unwrap();
+        let s = s.unwrap();
+        assert_eq!(d.log.records().len(), 4);
+        assert_eq!(d.log.head(), s.log.head());
+        assert!(s.log.is_member(&phone.id()) && s.log.is_member(&pc.id()));
+        assert!(matches!(
+            s.log.records().last().unwrap().body.op,
+            Op::Add(_)
+        ));
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

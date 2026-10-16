@@ -7,7 +7,7 @@
 //   node scripts/e2e-agent.mjs
 //
 // The agent runs with a temporary data dir as a separate test instance
-// (WARPSHOT_INSTANCE, debug builds only: own pipe and mutex, no tray icon,
+// (WARPSHOT_INSTANCE, debug or opt-in test-instance builds: own pipe and mutex, no tray icon,
 // hotkey, toasts or flyouts), so it runs next to the user's real agent;
 // clipboard writes are turned off so the test does not touch the desktop.
 import { execFileSync, spawn } from "node:child_process";
@@ -295,6 +295,32 @@ try {
   check("settings.set", s2.ask_above_mb === 100);
   const e2 = await rpc("settings.set", { ask_above_mb: "x" }).catch((e) => e);
   check("settings.set rejects bad types", e2.code === "bad-params");
+
+  // A phone without a WebSocket is still reachable through its push token.
+  check("register push", phone("push-token", "isolated-test-token").ok);
+  const reachable = (await rpc("devices.list")).find((x) => x.id === phoneId);
+  check("presence refresh sees push without online", reachable.push && !reachable.online);
+
+  // Regression: remove on PC, attempt removal from the stale phone, re-pair.
+  await rpc("devices.remove", { id: phoneId, reason: "user" });
+  check("removed phone absent", (await rpc("devices.list")).length === 1);
+  const denied = phone("remove", me);
+  check("stale phone gets actionable access error", !denied.ok && denied.out.includes("GroupUnavailable"));
+  check("denial preserves phone trust history", phone("devices").out.includes(me));
+  const recoveryQr = await rpc("pair.start");
+  const recoverySas = waitEvent("pair.sas");
+  const recoveryDone = waitEvent("pair.done");
+  const recoveryPhone = phoneAsync("pair", recoveryQr.qr_text);
+  await recoverySas;
+  await rpc("pair.confirm", { accept: true });
+  await recoveryDone;
+  check("re-pair removed phone", (await recoveryPhone).ok);
+  check("recovered phone syncs", phone("sync").ok);
+  check("recovered phone sends", phone("send-text", me, "recovered").ok);
+  const recovered = (await rpc("devices.list")).find((x) => x.id === phoneId);
+  check("removal deleted old push token", recovered && !recovered.push);
+  check("re-register push after recovery", phone("push-token", "isolated-test-token-new").ok);
+  check("new push registration visible", (await rpc("devices.list")).find((x) => x.id === phoneId).push);
 
   const c = await rpc("debug.counters");
   check("debug.counters", c.ws_connects >= 1, JSON.stringify(c));

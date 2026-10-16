@@ -102,6 +102,45 @@ connection (`docs/dev-setup.md`).
 | E2 | Real-device checklists: `resource-budget.md`, `threat-model.md` §6, Spike D numbers | all checked |
 | E3 | CI (GitHub Actions): fmt, clippy, test, deny; server tests; Windows agent build + idle gate; Android assemble | green on `main` |
 
+## Pairing recovery and presence (2026-10-15)
+
+- [x] Reproduce PC removal followed by phone removal failure and repeated QR
+  pairing failure. Readmit the stale phone only after fresh mutual confirmation;
+  retain verified history and reject rollback/forks. Recovery vectors cover
+  user and not-me removal (lost/stolen: see 2026-10-16); refusal on either side
+  keeps it removed.
+- [x] Android shows actionable group-access recovery instead of retaining a
+  usable-looking PC card after `not-member`. Keys/logs are preserved. Windows
+  distinguishes online, notification-reachable and unreachable devices, and
+  refreshes presence on UI demand without another idle timer.
+- [x] Local Worker + isolated release agent + phone_sim: remove, rejected
+  phone operation, retained trust history, re-pair, sync, send, old push-token
+  deletion and new registration all pass. Core attack suite: 12 pass.
+- [ ] Real-phone confirmation: install the prepared APK/PC builds, recover the
+  user's existing pairing, verify both directions and investigate the original
+  failed wake. No real device state was reset during the isolated tests.
+  2026-10-15: installed on both; the user re-paired and a transfer worked
+  (direction and background wake not checked).
+
+## Lost-or-stolen revocation, presence fallback, send progress (2026-10-16)
+
+- [x] Revoked set `R` (protocol §4.3): a key removed as lost or stolen is never
+  added again; core, server and `record.json` vectors (`AddRevoked`). The PC
+  refuses such a scanner before the SAS (`PAIR_REVOKED`, §5.3); Android offers
+  "Reset this phone" (clear app data → new identity, new push token).
+  `pair-recovery.json` + e2e: refused, then a new identity pairs.
+- [x] `devices.list` refreshes presence only while the server is connected,
+  waits at most 3 s and falls back to the last known presence (the Devices and
+  Settings pages no longer fail offline). Agent `pair.failed` now reports
+  `other-group` and `revoked` instead of `network`.
+- [x] Hotkey send flyout: "Waking …" → "Connected to …" → progress bar with
+  percent, sizes and speed; after 5 s without bytes the bar turns amber and says
+  "no data for N s". Its 1 s timer exists only while the bar is shown.
+- [ ] Deploy the server (the `R` rule) — honest clients already refuse; the
+  server rule stops a malicious member's re-add.
+- [ ] Real phone: "Reset this phone" end to end in the emulator test group only
+  (needs a lost-or-stolen removal; never the real group).
+
 ## Faz 2 and 3
 
 See [`architecture.md`](architecture.md) §11 for the planned extensions.

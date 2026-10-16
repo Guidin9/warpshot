@@ -68,6 +68,8 @@ pub enum UiMsg {
         text: String,
         tone: osd::Tone,
     },
+    /// Progress of a hotkey send: the flyout shows a bar.
+    FlyoutProgress(osd::SendProgress),
     /// The running transfers changed (tray menu and tooltip).
     Transfers(Vec<TransferItem>),
 }
@@ -339,6 +341,9 @@ impl Active {
 
 /// The tray tooltip shows progress; it is refreshed at most this often.
 const TRAY_EVERY: Duration = Duration::from_secs(1);
+/// `devices.list` waits at most this long for fresh presence, then answers
+/// with the last known one.
+const PRESENCE_REFRESH: Duration = Duration::from_secs(3);
 
 /// What a transfer list entry calls its items.
 fn items_label(items: &[OutItem]) -> String {
@@ -709,6 +714,7 @@ impl Service {
                 .map(|(id, (name, _))| DeviceItem {
                     name: name.clone(),
                     online: self.is_online(id),
+                    push: lk(&self.presence).iter().any(|p| p.id == *id && p.push),
                 })
                 .collect(),
             targets: others.iter().map(|(_, (n, _))| n.clone()).collect(),
@@ -1169,7 +1175,7 @@ impl Service {
         items: Vec<OutItem>,
         origin: Origin,
     ) -> bool {
-        let res = self.send(n, target.as_deref(), items).await;
+        let res = self.send(n, target.as_deref(), items, origin).await;
         self.untrack(n);
         let (ok, code) = match &res {
             Ok(_) => (true, None),
@@ -1256,11 +1262,13 @@ impl Service {
     }
 
     /// Sends items: wake the target, then wait for it to dial in (§7.4). Returns the target.
+    /// Hotkey sends show each step in the flyout, then a progress bar.
     async fn send(
         self: &Arc<Self>,
         n: u64,
         target: Option<&str>,
         items: Vec<OutItem>,
+        origin: Origin,
     ) -> Result<EndpointId, String> {
         let target = self.resolve_target(target).await?;
         let peer_name = self
@@ -1270,7 +1278,14 @@ impl Service {
             .find(|(id, _)| *id == target)
             .map(|(_, (name, _))| name)
             .unwrap_or_else(|| pick("your device", "cihazınız").into());
-        let cancel = self.track(n, "out", peer_name, items_label(&items), items.len() as u64);
+        let flyout = origin == Origin::Hotkey;
+        let cancel = self.track(
+            n,
+            "out",
+            peer_name.clone(),
+            items_label(&items),
+            items.len() as u64,
+        );
         // Queued behind another send: still cancellable.
         let _one_at_a_time = tokio::select! {
             g = self.send_lock.lock() => g,
@@ -1295,6 +1310,12 @@ impl Service {
         if via == Via::None {
             return Err("offline".into());
         }
+        if flyout {
+            self.flyout(
+                &l10n!("Waking {}…", "{} uyandırılıyor…", peer_name),
+                osd::Tone::Busy,
+            );
+        }
         let deadline = tokio::time::Instant::now()
             .checked_add(flow::PENDING_TTL)
             .ok_or("time")?;
@@ -1311,8 +1332,24 @@ impl Service {
         };
         let mut s = got.map_err(|_| "no-answer")?.map_err(|_| "no-answer")?;
         s.cancel_with(&cancel);
+        if flyout {
+            self.flyout(
+                &l10n!("Connected to {}…", "{} cihazına bağlanıldı…", peer_name),
+                osd::Tone::Busy,
+            );
+        }
         let this = Arc::clone(self);
-        s.on_progress(move |p| this.on_progress(n, p));
+        s.on_progress(move |p| {
+            this.on_progress(n, p);
+            if flyout {
+                (this.ui)(UiMsg::FlyoutProgress(osd::SendProgress {
+                    peer: peer_name.clone(),
+                    done: p.done,
+                    total: p.total,
+                    bytes_per_sec: p.bytes_per_sec,
+                }));
+            }
+        });
         // §8.5: both peers run the log sync step before any transfer.
         let mut synced = log.clone();
         if s.sync_logs(&mut synced, now_ms())
@@ -1379,6 +1416,7 @@ impl Service {
         let (Some(url), Some(_)) = (self.server_url.clone(), self.client.as_ref()) else {
             return Err(fail("no-server"));
         };
+        self.pull_log().await.map_err(|e| fail(net_code(&e)))?;
         let (ep, lease) = self.mgr.acquire().await.map_err(|e| fail(net_code(&e)))?;
         // Pairing works on its own copy of the device so the shared state stays usable.
         let pdev = Device::load(&self.dir, &self.ks, now_ms()).map_err(|_| fail("storage"))?;
@@ -1406,6 +1444,8 @@ impl Service {
                         | NetError::Pair(PairError::Expired | PairError::Used) => "expired",
                         NetError::Pair(PairError::Proof) => "proof",
                         NetError::Rejected | NetError::Declined(_) => "rejected",
+                        NetError::Closed(wx::code::PAIR_OTHER_GROUP) => "other-group",
+                        NetError::Closed(wx::code::PAIR_REVOKED) => "revoked",
                         _ => "network",
                     };
                     ("pair.failed", json!({"code": code}))
@@ -1554,6 +1594,18 @@ impl Service {
             "agent.version" => Ok(json!(env!("CARGO_PKG_VERSION"))),
             "status" => Ok(self.status().await),
             "devices.list" => {
+                // Refresh only on UI demand; no idle polling or permanent timer.
+                // Best effort: offline, or with group access denied, the list
+                // still comes from the verified log with the last known presence.
+                let gid = self.dev.lock().await.group_id();
+                let connected = *lk(&self.server_state) == "connected";
+                if let (Some(client), Some(gid), true) = (&self.client, gid, connected)
+                    && let Ok(Ok(fresh)) =
+                        tokio::time::timeout(PRESENCE_REFRESH, client.presence(&gid)).await
+                {
+                    *lk(&self.presence) = fresh;
+                    self.refresh_menu().await;
+                }
                 let dev = self.dev.lock().await;
                 let me = dev.id();
                 let def = self.setting_str("default_target");

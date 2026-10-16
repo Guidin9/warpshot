@@ -43,6 +43,8 @@ pub mod code {
     pub const PAIR_EXPIRED: u32 = 0x25;
     pub const PAIR_REJECTED: u32 = 0x26;
     pub const PAIR_OTHER_GROUP: u32 = 0x27;
+    /// The scanner's key was removed as lost or stolen (§4.3 set `R`).
+    pub const PAIR_REVOKED: u32 = 0x28;
     pub const DECLINED: u32 = 0x30;
     pub const TOO_LARGE: u32 = 0x31;
     pub const BUSY: u32 = 0x32;

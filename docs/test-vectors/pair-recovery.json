@@ -1,0 +1,9 @@
+{
+  "description": "Protocol 5.3 recovery scenarios: pair PC/phone, PC removes phone, phone retains old log, both confirm a fresh QR. 'readmit': expect a signed add after the remove and matching logs. 'revoked' (reason 1, lost-or-stolen, 4.3 set R): the display closes with PAIR_REVOKED before the SAS and the log is unchanged; the same phone with a new identity then pairs as a new device. No new wire encoding.",
+  "cases": [
+    { "name": "user removal", "reason": 0, "expect": "readmit" },
+    { "name": "lost or stolen removal", "reason": 1, "expect": "revoked" },
+    { "name": "not me removal", "reason": 3, "expect": "readmit" }
+  ],
+  "reject": ["confirmation refused", "removed appender", "log rollback", "log fork", "different group", "revoked key (lost or stolen)"]
+}

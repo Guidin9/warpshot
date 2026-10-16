@@ -141,6 +141,7 @@ impl Drop for Tray {
 pub struct DeviceItem {
     pub name: String,
     pub online: bool,
+    pub push: bool,
 }
 
 /// A running transfer as the tray shows it (roadmap 4b).
@@ -237,6 +238,8 @@ fn build_menu(model: &MenuModel) -> HMENU {
                 d.name,
                 if d.online {
                     pick("online", "çevrimiçi")
+                } else if d.push {
+                    pick("push available", "bildirimle ulaşılabilir")
                 } else {
                     pick("offline", "çevrimdışı")
                 }
@@ -343,6 +346,7 @@ mod tests {
             devices: vec![DeviceItem {
                 name: "Pixel".into(),
                 online: true,
+                push: false,
             }],
             targets: vec!["Pixel".into(), "Tablet".into()],
             default_target: Some(1),

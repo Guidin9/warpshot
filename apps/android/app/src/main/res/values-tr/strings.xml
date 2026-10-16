@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="err_group_unavailable">Sunucu bu cihaz grubuna erişimi reddetti. Yeniden bağlanmak için PC’de yeni bir QR kodu açıp tarayın ve iki cihazda da onaylayın.</string>
     <string name="share_label">PC\'ye gönder</string>
 
     <!-- Karşılama ve eşleştirme. PC tarafındaki adlar ("Eşleştirme", "Eşleştirme
@@ -19,6 +20,11 @@
     <string name="pairing_failed">Eşleştirme başarısız. %1$s</string>
     <string name="pair_err_invalid">Bu kod geçersiz ya da süresi dolmuş. PC\'nizde yeni bir kod gösterip tekrar tarayın.</string>
     <string name="pair_err_rejected">Eşleştirme iptal edildi ya da kodun süresi doldu. PC\'nizde yeni bir kod gösterip tekrar deneyin.</string>
+    <string name="pair_err_revoked">Bu telefon kayıp veya çalıntı olarak çıkarılmış; eski anahtarlarıyla gruba geri dönemez. Bu telefonda Warpshot\'ı sıfırlayın, sonra yeni bir kodu tarayıp yeni cihaz olarak eşleştirin.</string>
+    <string name="reset_phone">Bu telefonu sıfırla</string>
+    <string name="reset_phone_title">Bu telefonda Warpshot sıfırlansın mı?</string>
+    <string name="reset_phone_text">Bu telefondaki Warpshot anahtarları, geçmişi ve ayarları silinir ve uygulama kapanır. Aldığınız dosyalar İndirilenler\'de kalır. Uygulamayı yeniden açıp PC\'nizdeki kodu tarayın.</string>
+    <string name="reset_phone_confirm">Sıfırla</string>
     <string name="pair_err_network">PC\'nize ulaşılamadı. İki cihazın da çevrimiçi olduğundan emin olup yeni bir kodla tekrar deneyin.</string>
     <string name="scanner_unavailable">Tarayıcı kullanılamıyor: %1$s</string>
     <string name="confirm_pairing">Kodlar aynı mı?</string>
@@ -142,7 +148,7 @@
     <string name="remove_title">%1$s çıkarılsın mı?</string>
     <string name="remove_body">Cihaz grubunuzdan çıkar; artık cihazlarınıza gönderemez ve onlardan alamaz. Yeniden kullanmak için tekrar eşleştirmeniz gerekir.</string>
     <string name="reason_user">Artık kullanmıyorum</string>
-    <string name="reason_lost">Kayıp ya da çalıntı</string>
+    <string name="reason_lost">Kayıp ya da çalıntı (sıfırlanmadan geri eklenemez)</string>
     <string name="remove_confirm">Çıkar</string>
     <string name="removed">%1$s gruptan çıkarıldı.</string>
     <string name="set_receive">Bir şey geldiğinde</string>

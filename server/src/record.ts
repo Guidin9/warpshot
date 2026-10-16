@@ -20,6 +20,8 @@ export const OP_GENESIS = 0;
 export const OP_ADD = 1;
 export const OP_REMOVE = 2;
 export const OP_UPDATE = 3;
+/** Remove reason 1: the key is revoked for good (§4.3 set R). */
+export const REASON_LOST_OR_STOLEN = 1;
 
 
 const TEN_MIN_MS = 10 * 60 * 1000;
@@ -86,10 +88,12 @@ export interface LogState {
   lastCreatedAt: number;
   /** b64u(EndpointId) → DeviceInfo */
   members: Map<string, DeviceInfo>;
+  /** b64u(EndpointId) of keys removed as lost or stolen (§4.3 set R). */
+  revoked: Set<string>;
 }
 
 export function emptyState(groupId: Uint8Array): LogState {
-  return { groupId, seq: -1, headId: null, lastCreatedAt: 0, members: new Map() };
+  return { groupId, seq: -1, headId: null, lastCreatedAt: 0, members: new Map(), revoked: new Set() };
 }
 
 // C0, DEL and C1 control characters (Unicode Cc).
@@ -211,12 +215,15 @@ export async function validateRecord(
 
   // Rule 4.
   const members = new Map(state.members);
+  const revoked = new Set(state.revoked);
   switch (f.op) {
     case OP_GENESIS:
       members.set(subjectKey, f.device!);
       break;
     case OP_ADD:
       if (members.has(subjectKey) || f.device === undefined) throw new RecordError("add");
+      // A key removed as lost or stolen never comes back (§4.3 set R).
+      if (revoked.has(subjectKey)) throw new RecordError("add");
       // SPEC-GAP: §4.3 does not require `subject` to be a valid key. A
       // member key that can never verify is useless; stricter reading:
       // the subject of add must be a strict Ed25519 public key.
@@ -227,6 +234,7 @@ export async function validateRecord(
     case OP_REMOVE:
       if (!members.has(subjectKey)) throw new RecordError("remove");
       members.delete(subjectKey);
+      if (f.reason === REASON_LOST_OR_STOLEN) revoked.add(subjectKey);
       break;
     case OP_UPDATE: {
       if (!bytesEqual(r.signer, f.subject) || f.device === undefined) throw new RecordError("update");
@@ -244,7 +252,7 @@ export async function validateRecord(
   const id = await recordId(r);
   return {
     id,
-    state: { groupId: state.groupId, seq: n, headId: id, lastCreatedAt: f.createdAt, members },
+    state: { groupId: state.groupId, seq: n, headId: id, lastCreatedAt: f.createdAt, members, revoked },
   };
 }
 
@@ -255,8 +263,11 @@ export async function validateRecord(
 export function applyTrusted(state: LogState, r: ParsedRecord, id: Uint8Array): LogState {
   const f = r.fields;
   const members = new Map(state.members);
+  const revoked = new Set(state.revoked);
   const key = b64uEncode(f.subject);
-  if (f.op === OP_REMOVE) members.delete(key);
-  else if (f.device !== undefined) members.set(key, f.device);
-  return { groupId: state.groupId, seq: f.seq, headId: id, lastCreatedAt: f.createdAt, members };
+  if (f.op === OP_REMOVE) {
+    members.delete(key);
+    if (f.reason === REASON_LOST_OR_STOLEN) revoked.add(key);
+  } else if (f.device !== undefined) members.set(key, f.device);
+  return { groupId: state.groupId, seq: f.seq, headId: id, lastCreatedAt: f.createdAt, members, revoked };
 }

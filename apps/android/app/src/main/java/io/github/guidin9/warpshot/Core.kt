@@ -177,6 +177,8 @@ fun errorText(ctx: Context, e: Throwable): String = when (e) {
     is WarpException.Cancelled -> ctx.getString(R.string.cancelled)
     is WarpException.Offline -> ctx.getString(R.string.err_offline)
     is WarpException.NotPaired -> ctx.getString(R.string.err_not_paired)
+    is WarpException.GroupUnavailable -> ctx.getString(R.string.err_group_unavailable)
+    is WarpException.Revoked -> ctx.getString(R.string.pair_err_revoked)
     is WarpException.Rejected -> ctx.getString(R.string.err_rejected)
     is WarpException.Network -> ctx.getString(R.string.err_network, e.code.toString())
     is WarpException.Server -> ctx.getString(R.string.err_server, e.code)

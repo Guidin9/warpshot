@@ -18,6 +18,7 @@ export interface Device {
   platform: string;
   me: boolean;
   online: boolean;
+  push: boolean;
   last_seen: number | null;
   default_target: boolean;
 }

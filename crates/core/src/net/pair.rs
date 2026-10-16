@@ -155,6 +155,7 @@ async fn finish_as_receiver(
     conn: &Connection,
     me: &EndpointId,
     peer: &EndpointId,
+    previous: Option<&Log>,
     now_ms: u64,
 ) -> Result<Log, NetError> {
     let raw = read_frame(recv, MAX_DONE, HANDSHAKE_TIMEOUT).await?;
@@ -163,6 +164,10 @@ async fn finish_as_receiver(
     let (body, ..) = crate::log::parse_signed(first)?;
     let log = Log::from_records(body.group_id, records.iter().map(Vec::as_slice), now_ms)
         .map_err(|(_, e)| NetError::Log(e))?;
+    if let Err(e) = check_continuation(previous, &log) {
+        close(conn, e.close_code());
+        return Err(e);
+    }
     if !log.is_member(me) || !log.is_member(peer) {
         close(conn, code::PROTOCOL);
         return Err(NetError::State("pairing log lacks a member"));
@@ -172,6 +177,22 @@ async fn finish_as_receiver(
     // Wait for the appender to close after reading PairOk.
     let _ = tokio::time::timeout(HANDSHAKE_TIMEOUT, conn.closed()).await;
     Ok(log)
+}
+
+/// A fresh QR does not authorize erasing a known revocation or accepting a fork.
+fn check_continuation(previous: Option<&Log>, next: &Log) -> Result<(), NetError> {
+    if let Some(old) = previous
+        && (old.group_id() != next.group_id()
+            || old.records().len() > next.records().len()
+            || old
+                .records()
+                .iter()
+                .zip(next.records())
+                .any(|(a, b)| a.id != b.id))
+    {
+        return Err(NetError::Fork);
+    }
+    Ok(())
 }
 
 /// Display side (the PC): handles one accepted `warpshot/pair/1` connection.
@@ -208,6 +229,12 @@ where
         close(&conn, code::PAIR_OTHER_GROUP);
         return Err(NetError::Closed(code::PAIR_OTHER_GROUP));
     }
+    // A key removed as lost or stolen can never be added again (§4.3): say so
+    // before the SAS, so the user resets the device instead of confirming.
+    if dev.log.as_ref().is_some_and(|l| l.is_revoked(&scanner)) {
+        close(&conn, code::PAIR_REVOKED);
+        return Err(NetError::Closed(code::PAIR_REVOKED));
+    }
     write_frame(
         &mut send,
         &PairInfo {
@@ -238,14 +265,29 @@ where
         }
         Resolution::ScannerAdds(_) => Ok(Paired {
             peer: scanner,
-            log: finish_as_receiver(&mut send, &mut recv, &conn, &me, &scanner, now_ms).await?,
+            log: finish_as_receiver(
+                &mut send,
+                &mut recv,
+                &conn,
+                &me,
+                &scanner,
+                dev.log.as_ref(),
+                now_ms,
+            )
+            .await?,
         }),
         Resolution::AlreadyPaired(_) => {
             let log = dev.log.clone().ok_or(NetError::State("no log"))?;
-            finish_as_appender(&mut send, &mut recv, &conn, &log, vec![], |_| async {
-                Ok(())
-            })
-            .await?;
+            if !log.is_member(&me) {
+                close(&conn, code::NOT_MEMBER);
+                return Err(NetError::Identity);
+            }
+            let (log, new) = if log.is_member(&scanner) {
+                (log, vec![])
+            } else {
+                build_records(dev, Some(&log), &scanner, &hello.device, now_ms)?
+            };
+            finish_as_appender(&mut send, &mut recv, &conn, &log, new, submit).await?;
             Ok(Paired { peer: scanner, log })
         }
         Resolution::OtherGroup => {
@@ -313,12 +355,84 @@ where
         Resolution::NewGroup | Resolution::DisplayAdds(_) | Resolution::AlreadyPaired(_) => {
             Ok(Paired {
                 peer: qr.eid,
-                log: finish_as_receiver(&mut send, &mut recv, &conn, &me, &qr.eid, now_ms).await?,
+                log: finish_as_receiver(
+                    &mut send,
+                    &mut recv,
+                    &conn,
+                    &me,
+                    &qr.eid,
+                    dev.log.as_ref(),
+                    now_ms,
+                )
+                .await?,
             })
         }
         Resolution::OtherGroup => {
             close(&conn, code::PAIR_OTHER_GROUP);
             Err(NetError::Closed(code::PAIR_OTHER_GROUP))
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod recovery_tests {
+    use super::*;
+    use crate::log::{RemoveReason, platform};
+
+    #[test]
+    fn recovery_preserves_trust_history() {
+        let pc = Device::new("pc", platform::WINDOWS).unwrap();
+        let phone = Device::new("phone", platform::ANDROID).unwrap();
+        let now = super::super::store::now_ms();
+        let (original, _) = build_records(&pc, None, &phone.id(), &phone.info(), now).unwrap();
+        let mut removed = original.clone();
+        let (seq, prev) = removed.next_position();
+        let mut body = RecordBody {
+            group_id: removed.group_id(),
+            seq,
+            prev,
+            created_at: now,
+            subject: phone.id(),
+            op: Op::Remove(RemoveReason::User),
+        };
+        removed
+            .append(&sign_record(&pc.keys.ik, &body), now)
+            .unwrap();
+        assert_eq!(check_continuation(Some(&original), &removed), Ok(()));
+        assert_eq!(
+            check_continuation(Some(&removed), &original),
+            Err(NetError::Fork)
+        );
+        let mut fork = original.clone();
+        body.op = Op::Remove(RemoveReason::LostOrStolen);
+        fork.append(&sign_record(&pc.keys.ik, &body), now).unwrap();
+        assert_eq!(
+            check_continuation(Some(&removed), &fork),
+            Err(NetError::Fork)
+        );
+        let (other_group, _) = build_records(&pc, None, &phone.id(), &phone.info(), now).unwrap();
+        assert_eq!(
+            check_continuation(Some(&original), &other_group),
+            Err(NetError::Fork)
+        );
+        assert_eq!(check_continuation(None, &original), Ok(()));
+        // A key removed as lost or stolen is never re-added (§4.3 set R).
+        assert!(matches!(
+            build_records(&pc, Some(&fork), &phone.id(), &phone.info(), now),
+            Err(NetError::Log(crate::log::LogError::AddRevoked))
+        ));
+
+        // A removed display cannot sign the readmission of another device.
+        let mut without_pc = original;
+        body.subject = pc.id();
+        body.op = Op::Remove(RemoveReason::User);
+        without_pc
+            .append(&sign_record(&phone.keys.ik, &body), now)
+            .unwrap();
+        assert!(matches!(
+            build_records(&pc, Some(&without_pc), &phone.id(), &phone.info(), now),
+            Err(NetError::Log(crate::log::LogError::SignerNotMember))
+        ));
     }
 }

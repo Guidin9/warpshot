@@ -1,6 +1,7 @@
 package io.github.guidin9.warpshot
 
 import android.Manifest
+import android.app.ActivityManager
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -155,6 +156,7 @@ fun MainScreen(mine: MutableSet<Long>) {
     var notificationsOn by remember { mutableStateOf(true) }
     var screen by rememberSaveable { mutableStateOf("home") }
     var presence by remember { mutableStateOf<Map<String, Presence>>(emptyMap()) }
+    var groupUnavailable by remember { mutableStateOf(false) }
     var recent by remember { mutableStateOf<List<HistoryEntry>>(emptyList()) }
     val historyTick by HistoryLog.changed.collectAsState()
     val pairing by Pairing.state.collectAsState()
@@ -171,8 +173,14 @@ fun MainScreen(mine: MutableSet<Long>) {
         }
         devices = runCatching { core.devices() }.getOrDefault(emptyList())
         // Then the server's log, in case a device was added or removed elsewhere.
-        if (runCatching { core.sync() }.isSuccess) {
+        val sync = runCatching { core.sync() }
+        if (sync.isSuccess) {
+            groupUnavailable = false
             devices = runCatching { core.devices() }.getOrDefault(devices.orEmpty())
+        } else if (sync.exceptionOrNull() is uniffi.warpshot_ffi.WarpException.GroupUnavailable) {
+            // Availability only: retain the verified log and keys in the core.
+            groupUnavailable = true
+            presence = emptyMap()
         }
         presence = runCatching { core.presence() }.getOrNull()?.associateBy { it.id } ?: presence
     }
@@ -208,7 +216,7 @@ fun MainScreen(mine: MutableSet<Long>) {
         onPauseOrDispose { job.cancel() }
     }
 
-    val pcs = Core.pcs(devices.orEmpty())
+    val pcs = if (groupUnavailable) emptyList() else Core.pcs(devices.orEmpty())
     val paired = pcs.isNotEmpty()
     LaunchedEffect(paired) {
         if (paired) Push.ensureRegistered(ctx)
@@ -369,7 +377,10 @@ fun MainScreen(mine: MutableSet<Long>) {
 
     when {
         devices == null -> {}
-        pc == null -> OnboardingScreen(pairing, onScan = { scan() }, onAnswer = Pairing::answer)
+        pc == null -> OnboardingScreen(
+            if (groupUnavailable && pairing is PairState.Idle) PairState.Failed(ctx.getString(R.string.err_group_unavailable)) else pairing,
+            onScan = { scan() }, onAnswer = Pairing::answer, onReset = { resetThisPhone(ctx) },
+        )
         screen == "history" -> HistoryScreen(onBack = { screen = "home" })
         screen == "settings" -> SettingsScreen(onBack = { screen = "home" })
         screen == "devices" -> {
@@ -403,7 +414,13 @@ fun MainScreen(mine: MutableSet<Long>) {
 // ---------------------------------------------------------------- onboarding
 
 @Composable
-fun OnboardingScreen(state: PairState, onScan: () -> Unit, onAnswer: (Boolean) -> Unit) {
+fun OnboardingScreen(
+    state: PairState,
+    onScan: () -> Unit,
+    onAnswer: (Boolean) -> Unit,
+    onReset: () -> Unit = {},
+) {
+    var askReset by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         Column(
             Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp),
@@ -475,13 +492,50 @@ fun OnboardingScreen(state: PairState, onScan: () -> Unit, onAnswer: (Boolean) -
                         }
                     }
                     Spacer(Modifier.height(12.dp))
-                    ScanButton(stringResource(R.string.try_again), onScan)
+                    if (state.reset) {
+                        Button(
+                            onClick = { askReset = true },
+                            modifier = Modifier.fillMaxWidth().height(56.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError,
+                            ),
+                        ) {
+                            Text(stringResource(R.string.reset_phone), style = MaterialTheme.typography.titleSmall)
+                        }
+                    } else {
+                        ScanButton(stringResource(R.string.try_again), onScan)
+                    }
                 }
                 else -> ScanButton(stringResource(R.string.pair_with_pc), onScan)
             }
         }
     }
     if (state is PairState.Confirm) SasDialog(state, onAnswer)
+    if (askReset) {
+        AlertDialog(
+            onDismissRequest = { askReset = false },
+            title = { Text(stringResource(R.string.reset_phone_title)) },
+            text = { Text(stringResource(R.string.reset_phone_text)) },
+            confirmButton = {
+                TextButton(onClick = { askReset = false; onReset() }) {
+                    Text(stringResource(R.string.reset_phone_confirm), color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { askReset = false }) { Text(stringResource(R.string.cancel)) }
+            },
+        )
+    }
+}
+
+/**
+ * Wipes this app's data (keys, log, history, settings, push token) and ends the
+ * process, like "Clear data" in the system settings. The next start creates a
+ * new identity that pairs as a new device; received files in Downloads stay.
+ */
+fun resetThisPhone(ctx: Context) {
+    ctx.getSystemService(ActivityManager::class.java)?.clearApplicationUserData()
 }
 
 @Composable

@@ -81,6 +81,12 @@ private fun Render(screen: String) {
     val snackbar = remember { SnackbarHostState() }
     when (screen) {
         "onboarding" -> OnboardingScreen(PairState.Idle, {}, {})
+        "onboarding_recovery" -> OnboardingScreen(
+            PairState.Failed(androidx.compose.ui.res.stringResource(R.string.err_group_unavailable)), {}, {},
+        )
+        "onboarding_revoked" -> OnboardingScreen(
+            PairState.Failed(androidx.compose.ui.res.stringResource(R.string.pair_err_revoked), reset = true), {}, {},
+        )
         "onboarding_working" -> OnboardingScreen(PairState.Working, {}, {})
         "onboarding_failed" -> OnboardingScreen(
             PairState.Failed(androidx.compose.ui.res.stringResource(R.string.pair_err_invalid)),

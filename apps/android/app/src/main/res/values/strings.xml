@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- English (default). Turkish in values-tr/strings.xml. -->
 <resources>
+    <string name="err_group_unavailable">The server denied access to this device group. To reconnect, scan a new QR code on your PC and confirm on both devices.</string>
     <string name="app_name" translatable="false">Warpshot</string>
     <string name="share_label">Send to PC</string>
 
@@ -21,6 +22,11 @@
     <string name="pairing_failed">Pairing failed. %1$s</string>
     <string name="pair_err_invalid">This code is invalid or has expired. Show a new code on your PC and scan again.</string>
     <string name="pair_err_rejected">Pairing was cancelled or the code expired. Show a new code on your PC and try again.</string>
+    <string name="pair_err_revoked">This phone was removed as lost or stolen, so it can\'t rejoin with its old keys. Reset Warpshot on this phone, then scan a new code to pair it as a new device.</string>
+    <string name="reset_phone">Reset this phone</string>
+    <string name="reset_phone_title">Reset Warpshot on this phone?</string>
+    <string name="reset_phone_text">Warpshot\'s keys, history and settings on this phone are deleted and the app closes. Files you received stay in Downloads. Open the app again and scan the code on your PC.</string>
+    <string name="reset_phone_confirm">Reset</string>
     <string name="pair_err_network">Couldn\'t reach your PC. Make sure both devices are online, then try again with a new code.</string>
     <string name="scanner_unavailable">Scanner unavailable: %1$s</string>
     <string name="confirm_pairing">Do the codes match?</string>
@@ -144,7 +150,7 @@
     <string name="remove_title">Remove %1$s?</string>
     <string name="remove_body">It leaves your device group and can no longer send to or receive from your devices. To use it again, pair it again.</string>
     <string name="reason_user">I no longer use it</string>
-    <string name="reason_lost">Lost or stolen</string>
+    <string name="reason_lost">Lost or stolen (can\'t rejoin without a reset)</string>
     <string name="remove_confirm">Remove</string>
     <string name="removed">%1$s was removed.</string>
     <string name="set_receive">When something arrives</string>

@@ -26,6 +26,7 @@ const RULE_MAP: Record<string, RecordRule[]> = {
   TimeFuture: ["time"],
   TimeRegress: ["time"],
   AddExisting: ["add"],
+  AddRevoked: ["add"],
   SubjectKey: ["add"],
   RemoveMissing: ["remove"],
   UpdateNotSelf: ["update"],

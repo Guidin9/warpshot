@@ -75,8 +75,19 @@ warpshot-agent.exe  (single instance: named mutex Local\warpshot-agent-<user SID
 | Onboarding | See `MainActivity`. The notification permission is asked right after pairing; denied twice, the card opens the app's notification settings. Planned: guidance to exempt the app from battery optimization (settings intent; no direct-request permission) |
 | Keystore bridge | UniFFI callback interface: wrap/unwrap with an Android Keystore AES-GCM key (StrongBox if available) |
 
-When the UI is in the foreground, the app opens the server WebSocket for live
-presence and faster wakes. In the background it holds no connection.
+The Android app uses REST for presence and FCM for wakes; it does not keep a
+server WebSocket, even with the UI open. Windows shows a registered push token
+as "Reachable via notification" rather than offline. This is an availability
+hint, not a delivery guarantee. The PC refreshes presence when the device list
+is requested; there is no additional idle timer.
+
+After the server denies group access, Android offers QR pairing again while
+retaining its keys and verified log. After mutual confirmation, a surviving PC
+can readmit a removed phone with a fresh signed add (protocol §5.3). The phone
+then registers its push token again; removal deleted the previous registration.
+A phone removed as lost or stolen is the exception: its key is revoked for good
+(protocol §4.3), the PC refuses it before the SAS, and the phone offers
+"Reset this phone" (Android "clear data": new identity, new push token).
 
 ## 5. Server structure
 
