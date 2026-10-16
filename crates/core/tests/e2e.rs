@@ -200,10 +200,15 @@ async fn pair_then_transfer_both_ways() {
     assert_eq!(r[0].item.text.as_deref(), Some("merhaba dünya"));
     let p2 = r[1].path.clone().unwrap();
     assert_eq!(p2.file_name().unwrap().to_str().unwrap(), "_CON.bin");
+    assert_eq!(r[1].item.name, "_CON.bin", "apps see the saved name");
     assert_eq!(std::fs::read(&p2).unwrap(), big);
     let p3 = r[2].path.clone().unwrap();
     assert_eq!(p3.parent().unwrap(), dir_pc.as_path(), "no path traversal");
     assert_eq!(p3.file_name().unwrap().to_str().unwrap(), "evil name.png");
+    assert_eq!(
+        r[2].item.name, "evil name.png",
+        "never the sender's raw name"
+    );
     assert_eq!(std::fs::read(&p3).unwrap(), photo);
     #[cfg(windows)]
     {

@@ -163,6 +163,12 @@ try {
     motw = fs.readFileSync(path.join(recvDir, "shot.png:Zone.Identifier"), "utf8").includes("ZoneId=3");
   } catch {}
   check("Mark-of-the-Web", motw);
+  // A long multi-byte name keeps its extension (it used to be cut at 63 characters).
+  const longName = "KKTC ÖĞRENCİ İZİNLERİ SİSTEMİ _ TRNC STUDENT PERMISSION SYSTEM.pdf";
+  const doc = path.join(tmp, longName);
+  fs.writeFileSync(doc, "%PDF-1.4\n");
+  r = phone("send-file", me, doc);
+  check("long name keeps its extension", r.ok && fs.existsSync(path.join(recvDir, longName)), fs.readdirSync(recvDir).join(","));
   // A multi-chunk file (real screenshots are megabytes).
   const big = path.join(tmp, "big.bin");
   fs.writeFileSync(big, Buffer.from(Array.from({ length: 5 << 20 }, (_, i) => (i * 7919) & 255)));
@@ -281,7 +287,8 @@ try {
   );
 
   const hist = await rpc("history.list", { limit: 10 });
-  check("history has 3 incoming", hist.filter((h) => h.direction === "in").length === 3, hist.map((h) => h.kind).join(","));
+  check("history has 4 incoming", hist.filter((h) => h.direction === "in").length === 4, hist.map((h) => h.kind).join(","));
+  check("history keeps the saved name", hist.some((h) => h.name === longName));
   check("history shows the device name", hist.every((h) => h.peer === "Sim Phone" && h.peer_id === phoneId), hist.map((h) => h.peer).join(","));
 
   // PC → phone: the simulated phone has no WebSocket and no push token → offline.

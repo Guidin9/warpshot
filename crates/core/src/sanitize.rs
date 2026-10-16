@@ -52,6 +52,25 @@ pub fn sanitize(name: &str, fallback: &str) -> String {
     s
 }
 
+/// Shortens a name to at most `max` UTF-8 bytes, cut on a character boundary,
+/// keeping its extension (one of at most 16 characters; a longer one is cut as
+/// part of the name).
+pub fn shorten(name: &str, max: usize) -> String {
+    if name.len() <= max {
+        return name.to_string();
+    }
+    let (stem, ext) = match split_ext(name) {
+        (stem, ext) if ext.chars().count() <= 16 => (stem, prefix(ext, max)),
+        _ => (name, ""),
+    };
+    prefix(stem, max.saturating_sub(ext.len())).to_string() + ext
+}
+
+/// The longest prefix of `s` with at most `max` bytes.
+fn prefix(s: &str, max: usize) -> &str {
+    s.get(..s.floor_char_boundary(max)).unwrap_or("")
+}
+
 /// ("photo", ".png") — the extension includes the dot; dotfiles have no extension.
 pub fn split_ext(name: &str) -> (&str, &str) {
     match name.rfind('.') {
@@ -122,6 +141,30 @@ mod tests {
         let s = sanitize(&long, "f");
         assert_eq!(s.chars().count(), MAX_CHARS);
         assert!(s.ends_with(".jpeg"));
+    }
+
+    #[test]
+    fn shorten_fits_bytes_and_keeps_extension() {
+        // 66 characters, 74 bytes: fits whole (it used to lose ".pdf" at 63 characters).
+        let name = "KKTC ÖĞRENCİ İZİNLERİ SİSTEMİ _ TRNC STUDENT PERMISSION SYSTEM.pdf";
+        assert_eq!(shorten(name, 255), name);
+        assert_eq!(shorten("abc.pdf", 7), "abc.pdf");
+        // Multi-byte characters are never split.
+        let long = format!("{}.pdf", "Ğ".repeat(200));
+        let s = shorten(&long, 255);
+        assert!(s.len() <= 255);
+        assert_eq!(s, format!("{}.pdf", "Ğ".repeat(125)));
+        let emoji = format!("{}.png", "📷".repeat(100));
+        let s = shorten(&emoji, 255);
+        assert_eq!(s, format!("{}.png", "📷".repeat(62)));
+        // No extension, or an "extension" too long to be one: plain cut.
+        let s = shorten(&"ş".repeat(200), 255);
+        assert_eq!(s, "ş".repeat(127));
+        let s = shorten(&format!("Report v1.{}", "x".repeat(300)), 255);
+        assert_eq!(s, format!("Report v1.{}", "x".repeat(245)));
+        // Budgets smaller than the extension still never exceed `max`.
+        assert_eq!(shorten("abcdef.jpeg", 3), ".jp");
+        assert_eq!(shorten("abc.pdf", 0), "");
     }
 
     #[test]

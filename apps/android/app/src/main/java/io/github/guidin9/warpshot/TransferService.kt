@@ -22,6 +22,7 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.text.format.Formatter
 import android.util.Log
+import android.webkit.MimeTypeMap
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
@@ -292,7 +293,24 @@ object Outgoing {
     }
 
     private fun sanitize(raw: String): String =
-        raw.substringAfterLast('/').replace(Regex("[\\\\:*?\"<>|\\u0000-\\u001f]"), "_").take(120).ifBlank { "file" }
+        shorten(raw.substringAfterLast('/').replace(Regex("[\\\\:*?\"<>|\\u0000-\\u001f]"), "_")).ifBlank { "file" }
+
+    /**
+     * At most 255 bytes of UTF-8 (one file-name component), cut between
+     * characters, keeping an extension of up to 16 characters (as the core's
+     * `sanitize::shorten` does).
+     */
+    private fun shorten(n: String): String {
+        fun bytes(s: String) = s.toByteArray(Charsets.UTF_8).size
+        if (bytes(n) <= 255) return n
+        val dot = n.lastIndexOf('.')
+        val ext = if (dot > 0 && n.codePointCount(dot, n.length) <= 16) n.substring(dot) else ""
+        var stem = n.substring(0, n.length - ext.length)
+        while (stem.isNotEmpty() && bytes(stem) + bytes(ext) > 255) {
+            stem = stem.substring(0, stem.offsetByCodePoints(stem.length, -1))
+        }
+        return stem + ext
+    }
 
     /** Copies a shared item into `cache/outgoing/<n>/<name>`; null if it can't be read. Cancellable. */
     suspend fun copy(ctx: Context, uri: Uri): File? {
@@ -403,16 +421,17 @@ object Receiver {
             val path = item.path ?: continue
             val file = File(path)
             val image = item.kind == KIND_IMAGE && item.mime.startsWith("image/")
-            val name = item.name.ifBlank { file.name }
+            // The core's sanitized name, as saved in the inbox (never the sender's raw one).
+            val name = file.name
             val uri = Store.save(ctx, file, name, item.mime, image)
             file.delete()
             HistoryLog.add(ctx, true, item.peer, if (image) Kind.IMAGE else Kind.FILE, item.size.toLong(), uri != null, name, uri?.toString())
             if (uri == null) {
-                Notifier.failed(ctx, ctx.getString(R.string.couldnt_save, item.name))
+                Notifier.failed(ctx, ctx.getString(R.string.couldnt_save, name))
                 continue
             }
             if (image && copy) Clip.put(ctx, ClipData.newUri(ctx.contentResolver, "Warpshot", uri))
-            Notifier.saved(ctx, sender, item.name, uri, item.mime, image, copy)
+            Notifier.saved(ctx, sender, name, uri, item.mime, image, copy)
         }
     }
 }
@@ -433,11 +452,13 @@ fun progressLine(ctx: Context, t: TransferState): String {
 
 /** Saves received files with MediaStore: images to Pictures/Warpshot, the rest to Download/Warpshot. */
 object Store {
+    private const val GENERIC = "application/octet-stream"
+
     fun save(ctx: Context, src: File, name: String, mime: String, image: Boolean): Uri? {
         val cr = ctx.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(MediaStore.MediaColumns.MIME_TYPE, mime.ifBlank { "application/octet-stream" })
+            put(MediaStore.MediaColumns.MIME_TYPE, typeOf(name, mime))
             put(
                 MediaStore.MediaColumns.RELATIVE_PATH,
                 if (image) "${Environment.DIRECTORY_PICTURES}/Warpshot" else "${Environment.DIRECTORY_DOWNLOADS}/Warpshot",
@@ -459,6 +480,17 @@ object Store {
             runCatching { cr.delete(uri, null, null) }
             null
         }
+    }
+
+    /**
+     * The sender's type, or for a generic one (the PC sends it for most files,
+     * a PDF included) the type of the name's extension, so the Files app and
+     * viewers know how to open it.
+     */
+    private fun typeOf(name: String, sent: String): String {
+        if (sent.isNotBlank() && !sent.equals(GENERIC, ignoreCase = true)) return sent
+        val ext = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: GENERIC
     }
 }
 

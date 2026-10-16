@@ -422,6 +422,10 @@ async fn hostile_names_stay_inside_the_folder() {
             "trailing dot/space kept: {n:?}"
         );
     }
+    // Apps (notifications, history, MediaStore) get the saved names, never the raw ones.
+    let mut reported: Vec<String> = r.0.iter().map(|x| x.item.name.clone()).collect();
+    reported.sort();
+    assert_eq!(reported, saved);
     rig.close().await;
 }
 

@@ -64,7 +64,7 @@ pub fn file_item(id: u32, path: &Path, created_at: u64) -> Result<OutItem, NetEr
         ".txt" => (xfer::kind::FILE, "text/plain"),
         _ => (xfer::kind::FILE, "application/octet-stream"),
     };
-    let name: String = name.chars().take(xfer::MAX_NAME / 4).collect();
+    let name = sanitize::shorten(&name, xfer::MAX_NAME);
     Ok(OutItem {
         item: Item {
             id,
@@ -759,7 +759,7 @@ impl Session {
         self.send_ctrl(&Ctrl::Accept { ids: ids.clone() }).await?;
         let total = streamed_total(items.iter(), &ids);
         self.meter_start(total);
-        for item in items.into_iter().filter(|i| ids.contains(&i.id)) {
+        for mut item in items.into_iter().filter(|i| ids.contains(&i.id)) {
             if item.is_inline() {
                 out.push(Received { item, path: None });
                 continue;
@@ -804,6 +804,10 @@ impl Session {
                 err: None,
             })
             .await?;
+            // Callers see the sanitized name it was saved under, never the sender's raw one.
+            if let Some(n) = path.file_name().and_then(|n| n.to_str()) {
+                item.name = n.to_string();
+            }
             out.push(Received {
                 item,
                 path: Some(path),
@@ -1024,6 +1028,27 @@ mod tests {
         assert_eq!(log.len(), 2);
         assert_eq!(log[1].done, 5010);
         assert!(log[1].bytes_per_sec > 0);
+    }
+
+    #[test]
+    fn file_item_names_fit_the_limit_and_keep_the_extension() {
+        let dir = std::env::temp_dir().join(format!("warpshot-names-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = "KKTC ÖĞRENCİ İZİNLERİ SİSTEMİ _ TRNC STUDENT PERMISSION SYSTEM.pdf";
+        // 204 UTF-16 units (fine on NTFS) but 404 bytes of UTF-8.
+        let long = format!("{}.pdf", "ö".repeat(200));
+        for (file, want) in [
+            (real.to_string(), real.to_string()),
+            (long, format!("{}.pdf", "ö".repeat(125))),
+        ] {
+            let p = dir.join(&file);
+            std::fs::write(&p, b"x").unwrap();
+            let it = file_item(1, &p, 0).unwrap().item;
+            assert_eq!(it.name, want);
+            assert!(it.name.len() <= xfer::MAX_NAME);
+            std::fs::remove_file(&p).unwrap();
+        }
+        std::fs::remove_dir(&dir).unwrap();
     }
 
     #[test]
