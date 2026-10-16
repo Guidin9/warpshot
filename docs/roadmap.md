@@ -136,8 +136,9 @@ connection (`docs/dev-setup.md`).
 - [x] Hotkey send flyout: "Waking …" → "Connected to …" → progress bar with
   percent, sizes and speed; after 5 s without bytes the bar turns amber and says
   "no data for N s". Its 1 s timer exists only while the bar is shown.
-- [ ] Deploy the server (the `R` rule) — honest clients already refuse; the
-  server rule stops a malicious member's re-add.
+- [x] Deploy the server (the `R` rule) — honest clients already refuse; the
+  server rule stops a malicious member's re-add. Deployed 2026-10-16 (health
+  200); PC agent and phone app updated the same day.
 - [ ] Real phone: "Reset this phone" end to end in the emulator test group only
   (needs a lost-or-stolen removal; never the real group).
 
