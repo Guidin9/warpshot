@@ -142,6 +142,19 @@ connection (`docs/dev-setup.md`).
 - [ ] Real phone: "Reset this phone" end to end in the emulator test group only
   (needs a lost-or-stolen removal; never the real group).
 
+## Idle thread budget (2026-10-16)
+
+- [x] Idle agent over budget (7 threads > 6) after a fresh start without
+  transfers. Cause: the server connect was non-blocking (tokio/mio), which
+  makes Winsock keep `mswsock!SockAsyncThread` for five minutes, on top of
+  Windows' own thread-pool timers after DNS/DPAPI. Now a blocking connect on
+  the blocking pool: 5 threads max, 0.85 MB, 0 % CPU
+  (resource-budget.md §4). `scripts/watch-threads.ps1` shows which threads
+  come and go.
+- [ ] After transfers: iroh's relay connect (non-blocking, 5 min helper
+  thread) and COM from toasts. Measure a transfer followed by 10 idle
+  minutes before deciding whether to act.
+
 ## Faz 2 and 3
 
 See [`architecture.md`](architecture.md) §11 for the planned extensions.

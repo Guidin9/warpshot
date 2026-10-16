@@ -27,7 +27,9 @@ comes to ≈ 0.2–0.3 MB/day. Spike C fixes K.
 
 1. **Two threads.** The Win32 message loop, plus one tokio `current_thread`
    runtime that holds the server WebSocket and the named-pipe listener. Nothing
-   else runs at idle.
+   else runs at idle. Connections to the server use a blocking connect on the
+   blocking pool: a non-blocking one starts Winsock's own helper thread for
+   five minutes (§4, 2026-10-16).
 2. **Event-driven only.** No polling. The single idle timer is the WebSocket keepalive.
 3. **P2P on demand.** The iroh endpoint and transfer tasks start when needed and
    stop after 30 s without work. Any extra runtime threads end with them.
@@ -58,6 +60,8 @@ comes to ≈ 0.2–0.3 MB/day. Spike C fixes K.
 # After the agent has been idle ≥ 1 min; samples every 5 s for 10 min
 powershell -ExecutionPolicy Bypass -File scripts\measure-idle.ps1 -ProcessName warpshot-agent
 # Exit code 1 if over budget (used as a CI gate on the Windows runner)
+# Which threads come and go, with names and start modules (read-only):
+powershell -ExecutionPolicy Bypass -File scripts\watch-threads.ps1 -ProcessId (Get-Process warpshot-agent).Id -Seconds 600
 ```
 
 Network cross-check with `pktmon` (requires admin):
@@ -78,3 +82,26 @@ pktmon stop; pktmon etl2txt idle.etl -o idle.txt         # sum the packet length
 | 2026-10-12 | large-file question (roadmap "Next session" 11) | release, 5.4 MB exe | 0.87 MB max | 2.26 MB max | 6 max | 0 | – (1 TCP to the server) | installed agent, paired with the real group, fresh start, no transfers; 10 min of samples after 60 s warm-up |
 | 2026-10-12 | one accept loop per endpoint (roadmap "Next session" 10) | release | 0.81 MB max | 2.24 MB max | 6 max | 0 | – (1 TCP to the server) | installed agent, fresh start, no transfers; 10 min of samples after 60 s warm-up |
 | 2026-10-12 | blocking pool capped (1 thread, 1 s keep-alive) + server DNS reused | release | 0.80 MB max | 2.22 MB max | 5 max (20 min); 6 max during start-up incl. DNS | 0.0001 | – (1 TCP) | before the cap a WebSocket reconnect briefly reached 8 threads (tokio's blocking pool, 10 s keep-alive); no reconnect happened in this 20 min run |
+| 2026-10-16 | pairing recovery, revocation, send progress flyout | release | 0.89 MB max | 2.33 MB max | **7 max — over** | 0 | – (1 TCP) | installed agent, fresh start, no transfers, 150 s warm-up. Over budget by Winsock's `SockAsyncThread` (below) on top of OS thread-pool workers |
+| 2026-10-16 | blocking server connect | release | 0.85 MB max | 2.25 MB max | 5 max | 0 | – (1 TCP) | same conditions; `scripts/watch-threads.ps1`: our 2 threads plus OS thread-pool workers only, no `SockAsyncThread` |
+
+**Where the extra threads come from (2026-10-16).** Watched with
+`scripts/watch-threads.ps1` (thread names and start modules) and reproduced in
+a minimal test process that does one operation and then idles:
+
+- Every process starts with 3 loader workers (`ntdll` thread pool); they end
+  30–60 s later.
+- After the first DNS lookup or DPAPI call, Windows runs its own timers on the
+  thread pool: 2 workers at +30 s, 3 at +300 s, 2 at +600 s, each living
+  70–100 s. Nothing in our code triggers them, and they end by themselves.
+- A **non-blocking TCP connect** (tokio/mio, and std's `connect_timeout`)
+  makes Winsock start `mswsock!SockAsyncThread`, which stays for five
+  minutes. A plain blocking connect does not, and neither does using the
+  connected socket from tokio afterwards. The server client therefore resolves
+  and connects with blocking calls on tokio's blocking pool (one thread, ends a
+  second later) and hands the socket to tokio (`client/transport.rs`).
+
+Peak at idle now: our 2 + 3 pool workers = 5. Still open: after a transfer,
+iroh's relay connection is a non-blocking connect (its `SockAsyncThread` stays
+5 min), and a slow-route or failure toast initialises COM for the rest of the
+process's life (`combase` worker threads come and go).

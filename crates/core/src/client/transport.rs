@@ -111,12 +111,15 @@ impl AsyncWrite for Stream {
 }
 
 /// The server's addresses from the last lookup, reused for up to
-/// [`DNS_REUSE`]: tokio resolves names on a helper thread, and on every
-/// WebSocket reconnect that thread pushed the idle agent over its thread
-/// budget (resource-budget.md §2). TLS still checks the certificate against
+/// [`DNS_REUSE`]: each lookup brings up OS thread-pool workers in the idle
+/// agent (resource-budget.md §2). TLS still checks the certificate against
 /// the host name, so a stale address can only fail, never impersonate.
 static RESOLVED: std::sync::Mutex<Option<Resolved>> = std::sync::Mutex::new(None);
 const DNS_REUSE: std::time::Duration = std::time::Duration::from_secs(600);
+/// Addresses tried per connect. A blocking connect to an address that drops
+/// packets waits for the OS timeout (about 21 s on Windows), so a long list
+/// could hold the blocking pool for minutes.
+const MAX_ADDRS: usize = 2;
 
 struct Resolved {
     host: String,
@@ -142,18 +145,39 @@ fn remember_addrs(host: &str, port: u16, addrs: Option<Vec<std::net::SocketAddr>
     }
 }
 
-/// TCP to `host:port`, from the cached addresses when they are fresh.
+/// TCP to `host:port`, from the cached addresses when they are fresh. Lookup
+/// and connect run on tokio's blocking pool (the agent caps it at one thread
+/// that ends a second after its last job), and the connect is a blocking one:
+/// a non-blocking connect makes Winsock start its own helper thread
+/// (`mswsock!SockAsyncThread`), which stays for five minutes and, when it
+/// ends, brings up three thread-pool workers. That pushed the idle agent over
+/// its thread budget (resource-budget.md §4, 2026-10-16).
 async fn tcp_connect(host: &str, port: u16) -> io::Result<TcpStream> {
+    let host = host.to_owned();
+    let s = tokio::task::spawn_blocking(move || blocking_connect(&host, port))
+        .await
+        .map_err(|_| io::Error::other("connect task"))??;
+    s.set_nonblocking(true)?;
+    TcpStream::from_std(s)
+}
+
+fn blocking_connect(host: &str, port: u16) -> io::Result<std::net::TcpStream> {
     if let Some(addrs) = cached_addrs(host, port) {
-        if let Ok(s) = TcpStream::connect(&addrs[..]).await {
+        if let Ok(s) = connect_first(&addrs) {
             return Ok(s);
         }
         remember_addrs(host, port, None);
     }
-    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port)).await?.collect();
-    let s = TcpStream::connect(&addrs[..]).await?;
+    let addrs: Vec<std::net::SocketAddr> =
+        std::net::ToSocketAddrs::to_socket_addrs(&(host, port))?.collect();
+    let s = connect_first(&addrs)?;
     remember_addrs(host, port, Some(addrs));
     Ok(s)
+}
+
+/// Tries the first [`MAX_ADDRS`] addresses in order.
+fn connect_first(addrs: &[std::net::SocketAddr]) -> io::Result<std::net::TcpStream> {
+    std::net::TcpStream::connect(addrs.get(..MAX_ADDRS).unwrap_or(addrs))
 }
 
 /// Opens a connection to the server (no timeout here; callers wrap it).
