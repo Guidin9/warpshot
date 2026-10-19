@@ -154,7 +154,9 @@ connection (`docs/dev-setup.md`).
   come and go.
 - [ ] After transfers: iroh's relay connect (non-blocking, 5 min helper
   thread) and COM from toasts. Measure a transfer followed by 10 idle
-  minutes before deciding whether to act.
+  minutes before deciding whether to act. 2026-10-19: 10 threads max in
+  the window 3.5–8.5 min after a transfer, 2 at 9 min (0 UDP sockets,
+  1.73 MB private WS, 0.0009 % CPU).
 
 ## Locked phone asleep mid-receive (2026-10-19)
 
@@ -171,7 +173,6 @@ Evidence and runs: spikes.md "Phone asleep in the middle of a receive".
   taken in the FCM handler and renewed on progress; it lapses after 10 min
   without progress. Locked phone on battery, cold start: 20 MB in 6.3 s at
   ~9 MB/s; the lock was held once for 4.46 s.
-
 - [x] A woken device dials again after 2 s and 4 s on network failures
   (protocol §7.4); a refusal is not retried. Each failed attempt and each
   incoming connection the listener drops is noted (logcat, agent
@@ -187,6 +188,33 @@ Evidence and runs: spikes.md "Phone asleep in the middle of a receive".
   only once it has stopped, so the cleanup check missed. The accept loop now
   lets go of its own endpoint (generation count); test
   `idle_close_frees_the_dispatchers_endpoint`.
+
+Open, found the same day:
+
+- [ ] Forced-Doze delivery test with the wake-lock build (`deviceidle
+  force-idle`, restored afterwards). Only the locked phone on battery was
+  measured; the old build passed that twice by luck (the gap was short), so
+  test on battery, never over USB.
+- [ ] Quick Settings tile: `TileService.startActivityAndCollapse(Intent)`
+  throws `UnsupportedOperationException` for apps targeting API 34+ (we
+  target 37), so the tile most likely crashes on tap (Android lint; the tile
+  was never live-tested). Use the `PendingIntent` overload.
+- [ ] The UniFFI Kotlin bindings use `java.lang.ref.Cleaner` (API 33) while
+  `minSdk` is 29: on Android 10–12 freeing an FFI object would crash
+  (Android lint `NewApi`). Generate Android-compatible bindings (check the
+  pinned UniFFI's options) or raise `minSdk` to 33 (user decision).
+- [ ] `lintRelease` fails with 18 errors, none from the 2026-10-19 changes:
+  the tile (1) and `NewApi` (3) above, plus 14
+  `LocalContextGetResourceValueCall` in Compose (strings read through
+  `LocalContext` can go stale after a configuration change, e.g. a language
+  switch). Fix, then run lint in CI.
+- [ ] The PC waits its full 120 s when the woken phone has already given up;
+  the phone could report the failure through the server (sealed, like a
+  wake). Low priority now that the cause is fixed.
+- [ ] rustls 0.23.45 → 0.23.46 (RUSTSEC-2026-0346…0349): CI's `cargo deny`
+  has been red since 2026-10-16; `cargo update -p rustls` needs a small
+  download (ask first). Lint also lists firebase-messaging 25.0.1 (we use
+  24.1.0).
 
 ## Faz 2 and 3
 
