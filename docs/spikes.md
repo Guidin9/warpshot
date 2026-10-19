@@ -142,6 +142,57 @@ like iroh's DNS resolver already reads the DNS servers; no subprocess any more.
 
 (0 of 20 by chance at a 35 % hang rate: p ≈ 0.0002.)
 
+### Phone asleep in the middle of a receive (2026-10-19)
+
+Symptom: the first PC → phone send of the day failed. The phone (S21 FE,
+Android 16, on battery, locked for 1.5 min, battery "Unrestricted", one AP,
+no VPN) said "Network error (35)"; the PC's flyout said "Waking…" for 2 min,
+then "didn't respond".
+
+Timeline (phone clock; `dumpsys batterystats --history` and logcat):
+
+| Time | Event |
+|---|---|
+| 11:37:41.10 | Wi-Fi wakes the CPU (`dhdpcie_host_wake`): the FCM message |
+| 11:37:41.21 | cold app start; 41.38 `TransferService` in the foreground |
+| 11:37:42.38 | the receive starts (core loaded, keys unwrapped) |
+| 11:37:44.34 | **the CPU suspends** (`-running`): no wake lock held, the dial to the PC in progress |
+| 11:37:53.10 | Wi-Fi wakes the CPU again (`dhdpcie_host_wake`) |
+| 11:37:53.18 | "receive failed Network" (code 35: a failed connect) |
+
+The dial began at about 43.1; the PC dropped the stalled TLS handshake after
+its 10 s handshake timeout (§8.7), and that close packet woke the phone. A
+failed incoming attempt doesn't end the sender's wait, so the PC waited its
+120 s.
+
+Cause: a foreground service does not keep the CPU running. The app held no
+wake lock, and Firebase's ends when `onMessageReceived` returns. Each
+notification post holds a system wake lock for a moment, and the progress
+notification is updated about once a second, so receives usually survived.
+The unguarded gap is from the start of the receive to the first progress
+(core start, bind, dial, handshake); if it lasts more than about 1.5–2 s the
+phone can suspend inside it. Why the same-day repeats passed: they ran with
+the phone on USB, and the history shows no suspend at all while it is
+plugged in.
+
+Locked-phone runs after the fix (20 MB, phone on battery, locked ≥ 1 min):
+
+| Run | Build | App process | Result | Rate | CPU kept awake by |
+|---|---|---|---|---|---|
+| reference | old | warm, phone on USB | 6.2 s ✓ | ~9 MB/s | USB (no suspend) |
+| A | old | warm | 7.8 s ✓ | 3.6–5 MB/s, 958 lost packets | progress notification posts only |
+| A2 | old | cold | 9.1 s ✓ | 3.6–4.4 MB/s, 764 lost | progress notification posts only |
+| B | wake lock | cold | 6.3 s ✓ | ~9 MB/s, 142 lost | `warpshot:transfer`: taken 3 ms after Firebase's lock, held once for 4.46 s, released at the end |
+
+A and A2 didn't hit the gap: their dial finished about 1.2 s into the
+receive. The morning's dial didn't finish within 2 s, for a reason the logs
+don't show (the relay connect is the slow candidate). B shows the gap
+closed whatever the dial takes, and the full data rate with the screen off.
+
+Fix: `Awake` in `TransferService.kt`: one partial wake lock, taken in the
+FCM handler, held by every transfer (receive and send), renewed on
+progress; without progress it lapses after 10 min.
+
 ## Spike B — agent skeleton vs the idle budget
 
 Setup: `spikes/agent-skeleton`: tray icon and menu, `RegisterHotKey`, clipboard
@@ -238,3 +289,4 @@ Results:
 | Date | Phone / Android | D1 | D2 | D3 | D4 | Notes |
 |---|---|---|---|---|---|---|
 | 2026-10-10 | S21 FE / Android 16 | killed app woken in 187 ms (screen on); screen off / Doze pending | ✓ (`TransferService` started from the high-priority message) | Wi-Fi, screen on: text 2.4 s, image 3.7 s ✓; Doze pending | pending | measured with the product app instead of `spikes/android-wake`; the Doze / locked-phone run is open (roadmap "Next session" item 7) |
+| 2026-10-19 | S21 FE / Android 16, locked, on battery, "Unrestricted" | ✓ (cold app started by the message) | ✓ | 20 MB in 6.3 s with the transfer wake lock ✓; without it a receive can stall and fail (next section) | – | forced Doze (`deviceidle force-idle`) still open |

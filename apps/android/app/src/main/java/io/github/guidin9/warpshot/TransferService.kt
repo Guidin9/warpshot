@@ -18,6 +18,7 @@ import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Environment
 import android.os.IBinder
+import android.os.PowerManager
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.text.format.Formatter
@@ -64,6 +65,7 @@ class TransferService : Service() {
         // second (Android drops faster updates of one notification).
         scope.launch {
             Transfers.state.collect {
+                Awake.renew()
                 refresh()
                 delay(1000)
             }
@@ -103,19 +105,23 @@ class TransferService : Service() {
                 if (env == null) {
                     if (active.get() == 0) stop()
                 } else {
-                    run(Transfers.newId()) { id -> Receiver.handle(applicationContext, env, id) }
+                    // [start] took the hold for this wake; the run drops it.
+                    run(Transfers.newId(), held = true) { id -> Receiver.handle(applicationContext, env, id) }
                 }
             }
         }
         return START_NOT_STICKY
     }
 
-    private fun run(id: Long, work: suspend (Long) -> Unit) {
+    /** Runs one transfer with the CPU kept awake ([held]: the caller already holds [Awake] for it). */
+    private fun run(id: Long, held: Boolean = false, work: suspend (Long) -> Unit) {
+        if (!held) Awake.hold(this)
         active.incrementAndGet()
         scope.launch {
             try {
                 work(id)
             } finally {
+                Awake.drop()
                 if (active.decrementAndGet() == 0) stop() else refresh()
             }
         }
@@ -151,14 +157,24 @@ class TransferService : Service() {
         /** [EXTRA_ID] value for "cancel every running transfer". */
         const val ALL = -1L
 
+        /**
+         * Receives what wake [env] asks for. Takes an [Awake] hold at once: the
+         * Firebase wake lock ends when the FCM handler returns, and the phone
+         * can suspend before the service runs. The service's run drops it.
+         */
         fun start(ctx: Context, env: String) {
+            Awake.hold(ctx)
             val i = Intent(ctx, TransferService::class.java).putExtra(EXTRA_ENV, env)
             try {
                 ContextCompat.startForegroundService(ctx, i)
             } catch (_: Exception) {
                 // Foreground start not allowed (e.g. battery-restricted app): receive
                 // inline within the FCM handler's ~20 s window.
-                runBlocking { withTimeoutOrNull(18_000) { Receiver.handle(ctx, env, Transfers.newId()) } }
+                try {
+                    runBlocking { withTimeoutOrNull(18_000) { Receiver.handle(ctx, env, Transfers.newId()) } }
+                } finally {
+                    Awake.drop()
+                }
             }
         }
 
@@ -218,6 +234,43 @@ class TransferService : Service() {
             Intent(ctx, TransferService::class.java).setAction(ACTION_CANCEL).putExtra(EXTRA_ID, id),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+    }
+}
+
+/**
+ * Keeps the CPU running while transfers run. A foreground service does not:
+ * with the screen off and on battery, the phone suspended 2 s into a receive,
+ * the PC dropped the stalled handshake after 10 s, and the phone reported
+ * "Network error (35)" (2026-10-19, docs/spikes.md "Phone asleep in the
+ * middle of a receive"). One partial wake lock for all transfers; each [hold]
+ * needs one [drop]. Without a [renew] (progress) it lapses after [LAPSE_MS],
+ * so a stuck transfer can't keep the phone awake for long.
+ */
+object Awake {
+    private const val LAPSE_MS = 10 * 60 * 1000L
+    private var lock: PowerManager.WakeLock? = null
+    private var holders = 0
+
+    @Synchronized
+    fun hold(ctx: Context) {
+        holders++
+        val l = lock ?: ctx.applicationContext.getSystemService(PowerManager::class.java)
+            ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "warpshot:transfer")
+            ?.apply { setReferenceCounted(false) }
+            ?.also { lock = it }
+        l?.acquire(LAPSE_MS)
+    }
+
+    /** Restarts the lapse timer while transfers make progress. */
+    @Synchronized
+    fun renew() {
+        if (holders > 0) lock?.acquire(LAPSE_MS)
+    }
+
+    @Synchronized
+    fun drop() {
+        if (holders > 0) holders--
+        if (holders == 0) lock?.takeIf { it.isHeld }?.release()
     }
 }
 

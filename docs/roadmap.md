@@ -26,7 +26,8 @@ connection (`docs/dev-setup.md`).
   `resource-budget.md` §4.
 - [x] **F0-8** `[DL]` Spike C — DO keepalive. Set K in protocol §6.3.
 - [x] **F0-9** `[DL]` Spike D — Android wake path on the user's phone. Measured
-  with the product app (spikes.md Spike D); the Doze row is still open.
+  with the product app (spikes.md Spike D); locked phone on battery
+  measured 2026-10-19, forced Doze still open.
 - [x] **F0-10** ADR 0008, crate choices: X-Wing implementation, CBOR crate
   (`minicbor` vs `ciborium`, judged by strict-decoding support), SQLite binding.
 
@@ -155,14 +156,21 @@ connection (`docs/dev-setup.md`).
   thread) and COM from toasts. Measure a transfer followed by 10 idle
   minutes before deciding whether to act.
 
-## First send after a long idle failed (2026-10-19)
+## Locked phone asleep mid-receive (2026-10-19)
 
-PC (booted ~10 min earlier) → phone (screen off, app unused for 3 days,
-battery-exempt, one AP, no VPN): FCM arrived at once, the phone failed
-~11 s later with "Network error (35)" (`PROTOCOL`, the catch-all of a dial
-failure), the PC waited 120 s and reported "didn't respond". Repeats right
-after (warm app, then cold app) went direct in 1–3 s. The logs then said
-only "receive failed Network", so the failing step is unknown.
+PC → phone (locked, on battery, battery-exempt, one AP, no VPN): FCM
+arrived at once, the phone failed ~11 s later with "Network error (35)",
+the PC waited 120 s and reported "didn't respond". Cause: the phone's CPU
+suspended 2 s into the receive because the app held no wake lock (a
+foreground service doesn't keep the CPU running); the PC dropped the
+stalled handshake after 10 s and its close packet woke the phone. Same-day
+repeats passed because the phone was on USB, where it never suspends.
+Evidence and runs: spikes.md "Phone asleep in the middle of a receive".
+
+- [x] Transfers hold a partial wake lock (`Awake` in `TransferService.kt`),
+  taken in the FCM handler and renewed on progress; it lapses after 10 min
+  without progress. Locked phone on battery, cold start: 20 MB in 6.3 s at
+  ~9 MB/s; the lock was held once for 4.46 s.
 
 - [x] A woken device dials again after 2 s and 4 s on network failures
   (protocol §7.4); a refusal is not retried. Each failed attempt and each
@@ -171,8 +179,8 @@ only "receive failed Network", so the failing step is unknown.
   (`Connect(kind)`, `Lost(kind)`). Phone text: "Couldn't reach your PC, not
   even on a retry (code)". Hotkey flyout counts the seconds while waking; a
   failure stays 8 s.
-- [ ] On the next occurrence: read `adb logcat -s Warpshot` and the agent's
-  `debug.counters` to find the failing step, then fix the cause.
+- [x] Diagnostics: the phone notes a failed bind or log sync too
+  (`bind failed …`, `wake: log sync failed …`), not only failed dials.
 - [x] Found while measuring the agent: the dispatcher kept a closed endpoint,
   and with it iroh's two UDP sockets, until the next transfer (since
   2026-10-12): `accept()` ends when closing starts, `is_closed()` turns true
@@ -301,7 +309,9 @@ path, NAT, port mapping, endpoint, membership log).
 6. **Security tests for key theft:** stolen-key scenario, revocation
    ("lost or stolen") refusal, whether past transfers stay safe (forward
    secrecy) — add to the security plan below.
-7. Open: Doze/locked-phone delivery test; iroh transient threads after transfers.
+7. Open: forced-Doze delivery test (the locked phone on battery was measured
+   2026-10-19, see "Locked phone asleep mid-receive"); iroh transient threads
+   after transfers.
    Done (2026-10-12): server redeployed with the BOM-tolerant FCM parse; the
    orphaned first Firebase key deleted (the never-used one, by the per-key
    authentication metrics; the key in use stays).

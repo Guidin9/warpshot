@@ -364,6 +364,13 @@ impl Warpshot {
         self.observer.lock().ok().and_then(|o| o.clone())
     }
 
+    /// A diagnostics note for the app's log (kinds, codes and timing only).
+    fn diag(&self, note: impl FnOnce() -> String) {
+        if let Some(o) = self.observer() {
+            o.on_diag(note());
+        }
+    }
+
     /// Wires `s` to the transfer's cancel handle and progress reports.
     fn instrument(&self, s: &mut nx::Session, t: &Tracked, incoming: bool) {
         s.cancel_with(&t.cancel);
@@ -1044,7 +1051,10 @@ impl Warpshot {
             match res {
                 Ok(v) => break v,
                 Err(WakeError::NeedSync) if !synced => {
-                    self.pull_log().await?;
+                    if let Err(e) = self.pull_log().await {
+                        self.diag(|| format!("wake: log sync failed: {e:?}"));
+                        return Err(e);
+                    }
                     synced = true;
                 }
                 Err(_) => return Err(WarpError::Rejected),
@@ -1057,9 +1067,23 @@ impl Warpshot {
             }
             WakeAction::Connect { session, dial, .. } => {
                 let t = Tracked::new(&self.active, transfer);
-                let (ep, _lease) = tokio::select! {
-                    r = tokio::time::timeout(BIND_TIMEOUT, self.mgr.acquire()) => r.map_err(|_| bind_timed_out())??,
+                let t0 = std::time::Instant::now();
+                let bound = tokio::select! {
+                    r = tokio::time::timeout(BIND_TIMEOUT, self.mgr.acquire()) => r,
                     () = t.cancel.cancelled() => return Err(WarpError::Cancelled),
+                };
+                let (ep, _lease) = match bound {
+                    Ok(Ok(b)) => b,
+                    Ok(Err(e)) => {
+                        self.diag(|| {
+                            format!("bind failed after {} ms: {e:?}", t0.elapsed().as_millis())
+                        });
+                        return Err(e.into());
+                    }
+                    Err(_) => {
+                        self.diag(|| "bind timed out".into());
+                        return Err(bind_timed_out());
+                    }
                 };
                 let log = self
                     .dev
@@ -1069,11 +1093,8 @@ impl Warpshot {
                     .clone()
                     .ok_or(WarpError::NotPaired)?;
                 let mut log = log;
-                let obs = self.observer();
                 let failed = |n: u32, e: &NetError, ms: u64| {
-                    if let Some(o) = &obs {
-                        o.on_diag(format!("dial {n} failed after {ms} ms: {e:?}"));
-                    }
+                    self.diag(|| format!("dial {n} failed after {ms} ms: {e:?}"));
                 };
                 let mut s = tokio::select! {
                     r = flow::answer_connect(&ep, &log, &sender, session, &dial, failed) => r.map_err(dial_error)?,
