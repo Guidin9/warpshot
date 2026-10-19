@@ -822,7 +822,15 @@ async fn a_compromised_server_cannot_change_the_group() {
     // The server adds the attacker's own device, signed by the attacker.
     let mut log = mine.clone();
     let forged = next_record(&mine, &attacker, &attacker, Op::Add(attacker.info()));
-    assert!(apply(&mut log, &[forged.clone()], &head(&mine), now_ms()).is_err());
+    assert!(
+        apply(
+            &mut log,
+            std::slice::from_ref(&forged),
+            &head(&mine),
+            now_ms()
+        )
+        .is_err()
+    );
     assert_eq!(members(&log), 2);
     assert!(!log.is_member(&attacker.id()));
 
