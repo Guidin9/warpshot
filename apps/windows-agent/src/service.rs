@@ -7,7 +7,7 @@
 //! addresses or keys.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -68,6 +68,8 @@ pub enum UiMsg {
         text: String,
         tone: osd::Tone,
     },
+    /// A hotkey send waits for the device: the flyout counts the seconds.
+    FlyoutWaiting(String),
     /// Progress of a hotkey send: the flyout shows a bar.
     FlyoutProgress(osd::SendProgress),
     /// The running transfers changed (tray menu and tooltip).
@@ -131,6 +133,19 @@ fn parse_id(s: &str) -> Option<EndpointId> {
 
 fn lk<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Recent connection failures for `debug.counters`, newest last
+/// (diagnostics: kinds, codes and timing only, never addresses).
+type Diag = Arc<std::sync::Mutex<VecDeque<String>>>;
+const DIAG_KEEP: usize = 8;
+
+fn diag_push(d: &Diag, note: &str) {
+    let mut q = lk(d);
+    if q.len() >= DIAG_KEEP {
+        q.pop_front();
+    }
+    q.push_back(format!("{} {note}", now_ms()));
 }
 
 fn bad(msg: &str) -> RpcError {
@@ -277,6 +292,7 @@ pub struct Service {
     next_transfer: AtomicU64,
     /// Finished transfers by route (diagnostics, roadmap 4c).
     route_direct: AtomicU64,
+    diag: Diag,
     route_relay_only: AtomicU64,
     route_slow: AtomicU64,
     active: std::sync::Mutex<BTreeMap<u64, Active>>,
@@ -414,6 +430,11 @@ impl Service {
             &std::fs::read(dir.join(REPLAY_FILE)).unwrap_or_default(),
             now_ms(),
         );
+        let diag = Diag::default();
+        let hook = Arc::clone(&diag);
+        let disp = Dispatcher::with_hook(Box::new(move |why| {
+            diag_push(&hook, &format!("incoming dropped: {why}"));
+        }));
         Ok(Arc::new(Self {
             dir,
             ks,
@@ -422,7 +443,8 @@ impl Service {
             server_url,
             mgr,
             replay: Mutex::new(replay),
-            disp: Dispatcher::new(),
+            disp,
+            diag,
             send_lock: Mutex::new(()),
             ws: Mutex::new(None),
             acks: Mutex::new(HashMap::new()),
@@ -1009,8 +1031,11 @@ impl Service {
             .unwrap_or_else(|| pick("your device", "cihazınız").into());
         let cancel = self.track(n, "in", peer_name.clone(), String::new(), items);
         let (ep, _lease) = self.mgr.acquire().await?;
+        let failed = |k: u32, e: &NetError, ms: u64| {
+            diag_push(&self.diag, &format!("dial {k} failed after {ms} ms: {e:?}"));
+        };
         let mut s = tokio::select! {
-            r = flow::answer_connect(&ep, &log, &sender, session, &dial) => r?,
+            r = flow::answer_connect(&ep, &log, &sender, session, &dial, failed) => r?,
             () = cancel.cancelled() => return Err(NetError::Cancelled),
         };
         s.cancel_with(&cancel);
@@ -1311,10 +1336,11 @@ impl Service {
             return Err("offline".into());
         }
         if flyout {
-            self.flyout(
-                &l10n!("Waking {}…", "{} uyandırılıyor…", peer_name),
-                osd::Tone::Busy,
-            );
+            (self.ui)(UiMsg::FlyoutWaiting(l10n!(
+                "Waking {}…",
+                "{} uyandırılıyor…",
+                peer_name
+            )));
         }
         let deadline = tokio::time::Instant::now()
             .checked_add(flow::PENDING_TTL)
@@ -1837,6 +1863,7 @@ impl Service {
                     "route_relay_only": self.route_relay_only.load(Ordering::Relaxed),
                     "route_slow": self.route_slow.load(Ordering::Relaxed),
                     "endpoint_open": self.mgr.is_open().await,
+                    "diag": lk(&self.diag).iter().cloned().collect::<Vec<_>>(),
                 }))
             }
             _ => Err(RpcError::method_not_found()),

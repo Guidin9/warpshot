@@ -111,6 +111,7 @@
     <string name="err_not_paired">Pair with your PC first.</string>
     <string name="err_rejected">The PC refused the transfer.</string>
     <string name="err_network">Network error (%1$s).</string>
+    <string name="err_unreachable">Couldn\'t reach your PC, not even on a retry (%1$s). Try sending again.</string>
     <string name="err_server">Server error (%1$s).</string>
     <string name="err_invalid">Invalid input.</string>
     <string name="err_storage">Storage error.</string>

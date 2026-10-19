@@ -89,6 +89,10 @@ class CoreObserver(private val ctx: Context) : TransferObserver {
         Log.i("Warpshot", "transfer ${if (incoming) "in" else "out"} direct=$everDirect slow=$slow ms=$durationMs")
     }
 
+    override fun onDiag(note: String) {
+        Log.i("Warpshot", note)
+    }
+
     /** Another member added a device (protocol §4.6): alert in the app and in a notification. */
     override fun onDeviceAdded(id: String, name: String, platform: ULong, byId: String, byName: String) {
         val alert = DeviceAlert(id, name, platform, byId, byName)
@@ -181,6 +185,7 @@ fun errorText(ctx: Context, e: Throwable): String = when (e) {
     is WarpException.Revoked -> ctx.getString(R.string.pair_err_revoked)
     is WarpException.Rejected -> ctx.getString(R.string.err_rejected)
     is WarpException.Network -> ctx.getString(R.string.err_network, e.code.toString())
+    is WarpException.Unreachable -> ctx.getString(R.string.err_unreachable, e.code.toString())
     is WarpException.Server -> ctx.getString(R.string.err_server, e.code)
     is WarpException.Invalid -> ctx.getString(R.string.err_invalid)
     is WarpException.Storage -> ctx.getString(R.string.err_storage)

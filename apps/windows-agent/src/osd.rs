@@ -70,6 +70,10 @@ pub struct Bar {
 
 /// How long a result stays on screen.
 pub const RESULT_FOR: Duration = Duration::from_millis(2500);
+/// How long a failure stays on screen: long enough to notice after a long wait.
+pub const ERROR_FOR: Duration = Duration::from_secs(8);
+/// A waiting flyout adds the elapsed seconds after this long.
+pub const COUNT_AFTER: Duration = Duration::from_secs(3);
 /// A "busy" flyout hides by itself after this, in case no result ever comes
 /// (longer than the sender's pending-session TTL of 120 s).
 pub const BUSY_MAX: Duration = Duration::from_secs(130);
@@ -94,6 +98,8 @@ struct State {
     tone: Tone,
     /// The last report and when its byte count last changed.
     progress: Option<(SendProgress, Instant)>,
+    /// A wait that shows its elapsed seconds: the base text and its start.
+    waiting: Option<(String, Instant)>,
     /// Width while a bar is shown: grows, never shrinks, so the pill doesn't
     /// jitter as the numbers change.
     min_w: i32,
@@ -159,7 +165,8 @@ thread_local! {
 }
 
 /// Shows (or updates) the flyout. UI thread only. It hides after
-/// [`RESULT_FOR`] for results and [`BUSY_MAX`] for busy states.
+/// [`RESULT_FOR`] for results, [`ERROR_FOR`] for failures and [`BUSY_MAX`]
+/// for busy states.
 pub fn show(text: &str, tone: Tone) {
     let Some(hwnd) = window() else {
         return;
@@ -170,6 +177,7 @@ pub fn show(text: &str, tone: Tone) {
             text: text.encode_utf16().collect(),
             tone,
             progress: None,
+            waiting: None,
             min_w: 0,
         });
     });
@@ -177,12 +185,42 @@ pub fn show(text: &str, tone: Tone) {
     unsafe { KillTimer(hwnd, TIMER_TICK) };
     present(
         hwnd,
-        if tone == Tone::Busy {
-            BUSY_MAX
-        } else {
-            RESULT_FOR
+        match tone {
+            Tone::Busy => BUSY_MAX,
+            Tone::Ok => RESULT_FOR,
+            Tone::Error => ERROR_FOR,
         },
     );
+}
+
+/// Shows a busy state that counts its seconds ("Waking S21 FE… 12 s"), so a
+/// long wait doesn't look stuck. UI thread only.
+pub fn show_waiting(text: &str) {
+    let Some(hwnd) = window() else {
+        return;
+    };
+    STATE.with(|s| {
+        *s.borrow_mut() = Some(State {
+            hwnd,
+            text: text.encode_utf16().collect(),
+            tone: Tone::Busy,
+            progress: None,
+            waiting: Some((text.to_owned(), Instant::now())),
+            min_w: 0,
+        });
+    });
+    // SAFETY: our own window on this thread; SetTimer replaces a timer with the
+    // same id.
+    unsafe { SetTimer(hwnd, TIMER_TICK, 1000, None) };
+    present(hwnd, BUSY_MAX);
+}
+
+/// "Waking S21 FE… 12 s" once [`COUNT_AFTER`] has passed.
+pub fn waiting_text(base: &str, elapsed: Duration) -> String {
+    if elapsed < COUNT_AFTER {
+        return base.to_owned();
+    }
+    l10n!("{} {} s", "{} {} sn", base, elapsed.as_secs())
 }
 
 /// Shows a send's progress with a bar. UI thread only. Reports come up to four
@@ -207,6 +245,7 @@ pub fn show_progress(p: &SendProgress) {
             text: Vec::new(),
             tone: Tone::Busy,
             progress: Some((p.clone(), since)),
+            waiting: None,
             min_w,
         });
     });
@@ -237,21 +276,23 @@ fn present(hwnd: HWND, hide_after: Duration) {
     }
 }
 
-/// Rebuilds the progress text: the speed, or the stall note once no bytes
-/// came for [`STALL_AFTER`]. Returns whether it changed.
+/// Rebuilds the ticking text: the speed, or the stall note once no bytes came
+/// for [`STALL_AFTER`]; or a wait's elapsed seconds. Returns whether it changed.
 fn update_text(hwnd: HWND) -> bool {
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         let Some(st) = s.as_mut().filter(|st| st.hwnd == hwnd) else {
             return false;
         };
-        let Some((p, since)) = &st.progress else {
+        let text = if let Some((p, since)) = &st.progress {
+            let idle = since.elapsed();
+            progress_text(p, (idle >= STALL_AFTER).then_some(idle))
+        } else if let Some((base, since)) = &st.waiting {
+            waiting_text(base, since.elapsed())
+        } else {
             return false;
         };
-        let idle = since.elapsed();
-        let text: Vec<u16> = progress_text(p, (idle >= STALL_AFTER).then_some(idle))
-            .encode_utf16()
-            .collect();
+        let text: Vec<u16> = text.encode_utf16().collect();
         let changed = text != st.text;
         st.text = text;
         changed
@@ -711,5 +752,12 @@ mod tests {
             s.contains('7') && !s.ends_with("/s") && !s.ends_with("/sn"),
             "{s}"
         );
+    }
+
+    #[test]
+    fn waiting_text_counts_after_a_moment() {
+        assert_eq!(waiting_text("Waking", Duration::from_secs(1)), "Waking");
+        let t = waiting_text("Waking", Duration::from_millis(45_900));
+        assert!(t.starts_with("Waking 45 s"), "{t}");
     }
 }

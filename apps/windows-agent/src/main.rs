@@ -161,6 +161,7 @@ fn on_ui_msg(hwnd: HWND, msg: UiMsg) {
             msg,
             UiMsg::Toast { .. }
                 | UiMsg::Flyout { .. }
+                | UiMsg::FlyoutWaiting(_)
                 | UiMsg::FlyoutProgress(_)
                 | UiMsg::Hotkey(_)
         )
@@ -183,6 +184,7 @@ fn on_ui_msg(hwnd: HWND, msg: UiMsg) {
             let _ = clipboard::write_files(hwnd, &paths);
         }
         UiMsg::Flyout { text, tone } => osd::show(&text, tone),
+        UiMsg::FlyoutWaiting(text) => osd::show_waiting(&text),
         UiMsg::FlyoutProgress(p) => {
             osd::show_progress(&p);
             // Up to four a second while bytes flow: trim when the send ends.

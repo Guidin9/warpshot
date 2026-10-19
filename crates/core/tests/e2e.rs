@@ -533,9 +533,16 @@ async fn wake_driven_transfer() {
             s.send_items(p.items).await
         },
         async {
-            let s = flow::answer_connect(&ep_phone, &phone_log, &sender, got_session, &dial)
-                .await
-                .unwrap();
+            let s = flow::answer_connect(
+                &ep_phone,
+                &phone_log,
+                &sender,
+                got_session,
+                &dial,
+                |_, _, _| {},
+            )
+            .await
+            .unwrap();
             s.receive(&policy, |_| true).await
         }
     );
@@ -1065,7 +1072,8 @@ async fn answer_wake(
     session: [u8; 16],
 ) -> Result<Vec<nx::Received>, net::NetError> {
     let mut log = phone.log.clone().unwrap();
-    let mut s = net::flow::answer_connect(ep_phone, &log, &pc.id(), session, pc_addr).await?;
+    let mut s =
+        net::flow::answer_connect(ep_phone, &log, &pc.id(), session, pc_addr, |_, _, _| {}).await?;
     s.sync_logs(&mut log, now_ms()).await?;
     let policy = Policy {
         dir: tmpdir("disp"),
@@ -1073,6 +1081,79 @@ async fn answer_wake(
         accept_large: false,
     };
     s.receive(&policy, |_| true).await
+}
+
+/// §7.4: a woken device whose dial fails on the network dials again with the
+/// same session; the sender's answer (here `PROTOCOL` for a session it doesn't
+/// know) ends the dial at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_dial_is_retried_but_not_a_refusal() {
+    use std::{
+        sync::{Arc, Mutex},
+        time::{Duration, Instant},
+    };
+    use warpshot_core::{net::dispatch::Dispatcher, xfer::code};
+
+    let (pc, phone) = paired_pc_and_phone().await;
+    let ep_pc = net::bind(&pc.keys.ik, Relay::Disabled).await.unwrap();
+    let ep_phone = net::bind(&phone.keys.ik, Relay::Disabled).await.unwrap();
+    let pc_log = pc.log.clone().unwrap();
+    let phone_log = phone.log.clone().unwrap();
+    let pc_addr = net::dial_info(&ep_pc);
+    let pc_id = pc.id();
+    let failures: Arc<Mutex<Vec<(u32, net::NetError)>>> = Arc::default();
+    let record = |n: u32, e: &net::NetError, _ms: u64| {
+        failures.lock().unwrap().push((n, e.clone()));
+    };
+
+    // The first attempt is refused at the QUIC level; the second one gets through.
+    let session = [9u8; 16];
+    let (dialed, accepted) = tokio::join!(
+        net::flow::answer_connect(&ep_phone, &phone_log, &pc_id, session, &pc_addr, record),
+        async {
+            ep_pc.accept().await.unwrap().refuse();
+            let conn = accept_conn(&ep_pc).await;
+            nx::accept(&ep_pc, conn, &pc_log).await
+        }
+    );
+    assert_eq!(dialed.unwrap().hello_session, session);
+    assert_eq!(accepted.unwrap().hello_session, session);
+    {
+        let f = failures.lock().unwrap();
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!(f[0].0, 1);
+        assert!(net::flow::dial_retryable(&f[0].1), "{:?}", f[0].1);
+    }
+
+    // A session the sender doesn't know: one attempt, no pause, `PROTOCOL`.
+    failures.lock().unwrap().clear();
+    let notes: Arc<Mutex<Vec<String>>> = Arc::default();
+    let disp = Dispatcher::with_hook(Box::new({
+        let notes = Arc::clone(&notes);
+        move |why| notes.lock().unwrap().push(why)
+    }));
+    let _w = disp.expect(&ep_pc, phone.id(), &pc_log).unwrap();
+    let t0 = Instant::now();
+    let r =
+        net::flow::answer_connect(&ep_phone, &phone_log, &pc_id, [7; 16], &pc_addr, record).await;
+    assert!(
+        matches!(r, Err(net::NetError::Closed(code::PROTOCOL))),
+        "{:?}",
+        r.err()
+    );
+    assert_eq!(failures.lock().unwrap().len(), 1);
+    assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
+    // The sender's diagnostics hook says why (it runs right after the close).
+    for _ in 0..50 {
+        if !notes.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(*notes.lock().unwrap(), vec!["unknown session".to_owned()]);
+
+    ep_pc.close().await;
+    ep_phone.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

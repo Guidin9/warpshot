@@ -398,7 +398,7 @@ object Receiver {
             Transfers.finish(id, Outcome.Cancelled)
             return // cancelled here or on the PC: nothing to report
         } catch (e: Exception) {
-            Log.i("Warpshot", "receive failed ${e.javaClass.simpleName}")
+            Log.i("Warpshot", "receive failed ${e.javaClass.simpleName} ${(e as? WarpException.Network)?.code ?: (e as? WarpException.Unreachable)?.code ?: ""}")
             Transfers.finish(id, Outcome.Failed(errorText(ctx, e)))
             Notifier.failed(ctx, errorText(ctx, e))
             return

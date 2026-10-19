@@ -109,6 +109,7 @@
     <string name="err_not_paired">Önce PC\'nizle eşleştirin.</string>
     <string name="err_rejected">PC aktarımı reddetti.</string>
     <string name="err_network">Ağ hatası (%1$s).</string>
+    <string name="err_unreachable">PC\'nize yeniden denemede de ulaşılamadı (%1$s). Tekrar göndermeyi deneyin.</string>
     <string name="err_server">Sunucu hatası (%1$s).</string>
     <string name="err_invalid">Geçersiz giriş.</string>
     <string name="err_storage">Depolama hatası.</string>

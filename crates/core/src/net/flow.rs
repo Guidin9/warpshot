@@ -186,19 +186,95 @@ pub fn open_wake(
     Ok((opened.sender, action))
 }
 
+/// §7.4: pauses before the second and third dial of a woken recipient.
+pub const DIAL_RETRY_AFTER: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(4)];
+
+/// §7.4: a failed dial is tried again only if the network failed it (no
+/// connection, a lost one, or a sender whose side of the handshake timed
+/// out), never on the sender's answer (another close code) or a cancel.
+pub fn dial_retryable(e: &NetError) -> bool {
+    match e {
+        // Setup failures would repeat on every attempt.
+        NetError::Connect(k) => !matches!(
+            *k,
+            "relay-url" | "no-address" | "alpn" | "endpoint-closed" | "setup"
+        ),
+        NetError::Timeout | NetError::Stream(_) | NetError::Lost(_) => true,
+        NetError::Closed(c) => *c == crate::xfer::code::TIMEOUT,
+        _ => false,
+    }
+}
+
 /// The woken recipient dials the sender with the session (§7.4) and returns the
-/// keyed session; the sender (listener) will send the `Offer`.
+/// keyed session; the sender (listener) will send the `Offer`. Up to three
+/// attempts; `failed` hears about each failed one (attempt number from 1, the
+/// error, ms since the first dial) for diagnostics.
 pub async fn answer_connect(
     ep: &Endpoint,
     log: &Log,
     sender: &EndpointId,
     session: [u8; 16],
     dial: &wake::DialInfo,
+    mut failed: impl FnMut(u32, &NetError, u64),
 ) -> Result<nx::Session, NetError> {
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        nx::dial(ep, log, sender, dial, session),
-    )
-    .await
-    .map_err(|_| NetError::Timeout)?
+    let t0 = Instant::now();
+    let mut pauses = DIAL_RETRY_AFTER.iter();
+    let mut attempt = 0u32;
+    loop {
+        attempt = attempt.saturating_add(1);
+        let e = match tokio::time::timeout(
+            Duration::from_secs(10),
+            nx::dial(ep, log, sender, dial, session),
+        )
+        .await
+        {
+            Ok(Ok(s)) => return Ok(s),
+            Ok(Err(e)) => e,
+            Err(_) => NetError::Timeout,
+        };
+        failed(
+            attempt,
+            &e,
+            u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
+        );
+        match pauses.next() {
+            Some(p) if dial_retryable(&e) => tokio::time::sleep(*p).await,
+            _ => return Err(e),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::xfer::code;
+
+    #[test]
+    fn only_network_failures_are_redialed() {
+        for e in [
+            NetError::Connect("idle"),
+            NetError::Connect("quic"),
+            NetError::Timeout,
+            NetError::Stream("read len"),
+            NetError::Lost("reset"),
+            NetError::Closed(code::TIMEOUT),
+        ] {
+            assert!(dial_retryable(&e), "{e:?}");
+        }
+        // The sender's answers, local decisions and setup failures end the dial.
+        for e in [
+            NetError::Connect("relay-url"),
+            NetError::Connect("no-address"),
+            NetError::Connect("endpoint-closed"),
+            NetError::Closed(code::PROTOCOL),
+            NetError::Closed(code::NOT_MEMBER),
+            NetError::Closed(code::VERSION),
+            NetError::Cancelled,
+            NetError::Identity,
+            NetError::Bind,
+            NetError::State("no log"),
+        ] {
+            assert!(!dial_retryable(&e), "{e:?}");
+        }
+    }
 }

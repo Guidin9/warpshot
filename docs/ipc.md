@@ -41,7 +41,7 @@ The agent owns all state, keys and network access; the UI holds none of them.
 | `transfer.list` | – | `{transfers: [Transfer]}` — the running transfers (below) |
 | `transfer.cancel` | `{transfer}` | `{}`, or error `not-found` if it already ended. The transfer then ends with `transfer.done {ok: false, code: "cancelled"}`; the receiving side deletes partial files (protocol §8.4 "Cancellation") |
 | `group.not_me` | `{id}` | `{}` — "This wasn't me": removes the device (reason `not-me`) |
-| `debug.counters` | – | `{ws_bytes_in, ws_bytes_out, transfers, route_direct, route_relay_only, route_slow, ...}` (ids and counts only; `route_*` count finished transfers by how they travelled, see `transfer.slow`) |
+| `debug.counters` | – | `{ws_bytes_in, ws_bytes_out, transfers, route_direct, route_relay_only, route_slow, diag, ...}` (ids and counts only; `route_*` count finished transfers by how they travelled, see `transfer.slow`; `diag`: the last 8 connection failures since the agent started, `"<unix ms> <note>"`, e.g. `incoming dropped: unknown session` or `dial 1 failed after 10012 ms: Timeout` — kinds, codes and timing only, never addresses) |
 
 `Settings` = `{hotkey, default_target, save_dir, ask_above_mb, relay_data, autostart,
 on_receive: {save, clipboard, notify, history}, history_days, history_items}`

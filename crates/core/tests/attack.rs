@@ -570,9 +570,16 @@ async fn connection_flood_from_a_stranger_does_not_block_a_member() {
     let (got, sent) = tokio::join!(
         async {
             let mut log = phone.log.clone().unwrap();
-            let mut s = net::flow::answer_connect(&ep_phone, &log, &pc.id(), session, &pc_addr)
-                .await
-                .unwrap();
+            let mut s = net::flow::answer_connect(
+                &ep_phone,
+                &log,
+                &pc.id(),
+                session,
+                &pc_addr,
+                |_, _, _| {},
+            )
+            .await
+            .unwrap();
             s.sync_logs(&mut log, now_ms()).await.unwrap();
             let policy = Policy {
                 dir: tmpdir("flood"),

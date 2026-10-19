@@ -226,7 +226,8 @@ reject the removed EndpointId on the transfer ALPN.
 | Situation | Behavior |
 |---|---|
 | Target offline (`via: none`) | Immediate toast/notification "device is offline" (queue in Faz 2) |
-| Wake sent, no dial within 120 s | "Device didn't respond" (likely battery restrictions → link to the guide) |
+| Wake sent, no dial within 120 s | "Device didn't respond" (likely battery restrictions → link to the guide). The hotkey flyout counts the seconds while it waits; a failure stays on screen for 8 s |
+| Woken device's dial fails on the network | It dials again after 2 s and 4 s (protocol §7.4); after the third failure the phone shows "Couldn't reach your PC, not even on a retry (code)". Each failed attempt and each incoming connection the listener drops is noted (Android logcat `dial N failed …` / `incoming dropped: …`; agent `debug.counters.diag`) |
 | Server unreachable | v1: sending fails with a clear message (the wake needs the server); pairing and membership changes need the server too. Faz 2: the LAN fast path works without the server |
 | `relay_data` off and no direct path | `DIRECT_UNAVAILABLE` with an explanation |
 | Hotkey already taken | Toast + the settings window opens on the hotkey recorder |

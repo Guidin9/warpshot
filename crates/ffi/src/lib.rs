@@ -48,6 +48,11 @@ pub enum WarpError {
     Network {
         code: u32,
     },
+    /// After a wake, the sender could not be reached, not even on the retries
+    /// (protocol §7.4); `code` is the last attempt's close code.
+    Unreachable {
+        code: u32,
+    },
     Server {
         code: String,
     },
@@ -121,6 +126,9 @@ pub trait TransferObserver: Send + Sync {
     fn on_path(&self, incoming: bool, ms: u64, note: String);
     /// A transfer finished (diagnostics: route kind and duration, no addresses).
     fn on_route(&self, incoming: bool, ever_direct: bool, slow: bool, duration_ms: u64);
+    /// A dial attempt failed, or an incoming connection went nowhere
+    /// (diagnostics: kinds, codes and timing only; `note` is for logs).
+    fn on_diag(&self, note: String);
     /// Incoming transfer `transfer` has `count` items above the receive limit,
     /// `total_bytes` together (§8.4): ask the user and pass the answer to
     /// [`Warpshot::answer_large`]. `name` is the first one's (sanitized) name,
@@ -253,7 +261,8 @@ pub struct Warpshot {
     replay: Mutex<ReplayCache>,
     /// The one accept loop on the endpoint (protocol §9 "Pending sessions").
     disp: Arc<Dispatcher>,
-    observer: std::sync::Mutex<Option<Arc<dyn TransferObserver>>>,
+    /// Shared with the dispatcher's diagnostics hook.
+    observer: Arc<std::sync::Mutex<Option<Arc<dyn TransferObserver>>>>,
     /// Running transfers by the app's id, for [`Warpshot::cancel_transfer`].
     active: Arc<std::sync::Mutex<HashMap<u64, Cancel>>>,
     /// Open questions about large items by transfer id, for [`Warpshot::answer_large`].
@@ -265,6 +274,18 @@ pub struct Warpshot {
 /// [`net::RELAY_WAIT`] for the relay; once (in an emulator) it never returned,
 /// and every later transfer then waited behind the endpoint manager's lock.
 const BIND_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// A dial that failed for good (§7.4): network failures become
+/// [`WarpError::Unreachable`], refusals keep their usual mapping.
+fn dial_error(e: NetError) -> WarpError {
+    if flow::dial_retryable(&e) {
+        WarpError::Unreachable {
+            code: e.close_code(),
+        }
+    } else {
+        e.into()
+    }
+}
 
 fn bind_timed_out() -> WarpError {
     WarpError::Network {
@@ -499,6 +520,13 @@ impl Warpshot {
             &std::fs::read(dir.join(REPLAY_FILE)).unwrap_or_default(),
             now_ms(),
         );
+        let observer: Arc<std::sync::Mutex<Option<Arc<dyn TransferObserver>>>> = Arc::default();
+        let hook = Arc::clone(&observer);
+        let disp = Dispatcher::with_hook(Box::new(move |why| {
+            if let Some(o) = hook.lock().ok().and_then(|o| o.clone()) {
+                o.on_diag(format!("incoming dropped: {why}"));
+            }
+        }));
         Ok(Arc::new(Self {
             dir,
             ks,
@@ -506,8 +534,8 @@ impl Warpshot {
             client,
             mgr,
             replay: Mutex::new(replay),
-            disp: Dispatcher::new(),
-            observer: std::sync::Mutex::new(None),
+            disp,
+            observer,
             active: Arc::default(),
             asks: Arc::default(),
             rt,
@@ -1041,8 +1069,14 @@ impl Warpshot {
                     .clone()
                     .ok_or(WarpError::NotPaired)?;
                 let mut log = log;
+                let obs = self.observer();
+                let failed = |n: u32, e: &NetError, ms: u64| {
+                    if let Some(o) = &obs {
+                        o.on_diag(format!("dial {n} failed after {ms} ms: {e:?}"));
+                    }
+                };
                 let mut s = tokio::select! {
-                    r = flow::answer_connect(&ep, &log, &sender, session, &dial) => r?,
+                    r = flow::answer_connect(&ep, &log, &sender, session, &dial, failed) => r.map_err(dial_error)?,
                     () = t.cancel.cancelled() => return Err(WarpError::Cancelled),
                 };
                 self.instrument(&mut s, &t, true);
@@ -1219,6 +1253,28 @@ mod tests {
             WarpError::Network {
                 code: code::PAIR_OTHER_GROUP
             }
+        ));
+        // A dial that failed for good after the §7.4 retries says "couldn't
+        // reach"; a refusal keeps its own meaning.
+        assert!(matches!(
+            dial_error(NetError::Lost("idle")),
+            WarpError::Unreachable {
+                code: code::PROTOCOL
+            }
+        ));
+        assert!(matches!(
+            dial_error(NetError::Connect("quic")),
+            WarpError::Unreachable { .. }
+        ));
+        assert!(matches!(
+            dial_error(NetError::Identity),
+            WarpError::Network {
+                code: code::NOT_MEMBER
+            }
+        ));
+        assert!(matches!(
+            dial_error(NetError::Cancelled),
+            WarpError::Cancelled
         ));
         let denied = ClientError::Server {
             status: 403,

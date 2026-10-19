@@ -155,6 +155,25 @@ connection (`docs/dev-setup.md`).
   thread) and COM from toasts. Measure a transfer followed by 10 idle
   minutes before deciding whether to act.
 
+## First send after a long idle failed (2026-10-19)
+
+PC (booted ~10 min earlier) → phone (screen off, app unused for 3 days,
+battery-exempt, one AP, no VPN): FCM arrived at once, the phone failed
+~11 s later with "Network error (35)" (`PROTOCOL`, the catch-all of a dial
+failure), the PC waited 120 s and reported "didn't respond". Repeats right
+after (warm app, then cold app) went direct in 1–3 s. The logs then said
+only "receive failed Network", so the failing step is unknown.
+
+- [x] A woken device dials again after 2 s and 4 s on network failures
+  (protocol §7.4); a refusal is not retried. Each failed attempt and each
+  incoming connection the listener drops is noted (logcat, agent
+  `debug.counters.diag`); dial errors carry the iroh failure kind
+  (`Connect(kind)`, `Lost(kind)`). Phone text: "Couldn't reach your PC, not
+  even on a retry (code)". Hotkey flyout counts the seconds while waking; a
+  failure stays 8 s.
+- [ ] On the next occurrence: read `adb logcat -s Warpshot` and the agent's
+  `debug.counters` to find the failing step, then fix the cause.
+
 ## Faz 2 and 3
 
 See [`architecture.md`](architecture.md) §11 for the planned extensions.

@@ -461,6 +461,15 @@ The recipient MUST, in order:
 
 - `connect`: within 10 s, dial `sender` at `dial` with ALPN `warpshot/xfer/1`
   and present `session` (§8.3). On Android, start the foreground service first.
+  If an attempt fails before the handshake completes because the network
+  failed (no connection within 10 s, the connection failed or was lost
+  without an application close, or the sender closed it with `TIMEOUT`;
+  not a local setup error such as unusable `dial` info),
+  dial again with the same `session` after 2 s, then after 4 s: at most 3
+  attempts, about 36 s in all, well inside the sender's 120 s (§9 "Pending
+  sessions"). Any other close code is the sender's answer (e.g. `PROTOCOL`
+  for a session it doesn't know, `NOT_MEMBER`, `VERSION`, `CANCELLED`); it,
+  and any failure after the handshake, ends the transfer without a retry.
 - `group-changed`: sync the log from the server, validate it, and raise alerts (§4.6).
   The member that appends a record (pairing, rename, remove) sends one to every
   other member right after the server accepted it: phones have no WebSocket
@@ -638,6 +647,8 @@ admission (§8.1) is checked again.
   the user why.
 - **Pending sessions:** the sender keeps items ready for 120 s after sending a wake.
   If no connection arrives in that time, it tells the user the device did not respond.
+  A failed incoming attempt (TLS or §8.3 handshake) does not end the wait:
+  the woken device may dial again with the same session (§7.4).
   If the user cancels the send while it waits (or while the wake request is
   still in flight), the sender keeps the session reserved for the rest of
   those 120 s: a connection that presents it is closed with `CANCELLED` right

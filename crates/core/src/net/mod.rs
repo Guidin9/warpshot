@@ -14,7 +14,10 @@ use std::{fmt, time::Duration};
 pub use iroh::endpoint::Connection;
 use iroh::{
     Endpoint, EndpointAddr, RelayMode, SecretKey, TransportAddr,
-    endpoint::{RecvStream, SendStream, VarInt, presets},
+    endpoint::{
+        ConnectError, ConnectWithOptsError, ConnectingError, ConnectionError, RecvStream,
+        SendStream, VarInt, presets,
+    },
 };
 
 use crate::{
@@ -29,11 +32,15 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetError {
     Bind,
-    Connect,
+    /// Dialing failed; the tag names how (see [`connect_kind`]).
+    Connect(&'static str),
     /// The peer is not the expected identity or not a member.
     Identity,
     /// A stream operation failed; the tag names the operation.
     Stream(&'static str),
+    /// The connection ended under a stream operation without an application
+    /// close code; the tag names how (see [`close_kind`]).
+    Lost(&'static str),
     /// The connection was closed with this application code.
     Closed(u32),
     Timeout,
@@ -194,7 +201,7 @@ pub fn endpoint_addr(id: &EndpointId, dial: &DialInfo) -> Result<EndpointAddr, N
     let mut addrs: Vec<TransportAddr> = dial.addrs.iter().map(|a| TransportAddr::Ip(*a)).collect();
     if let Some(r) = &dial.relay {
         addrs.push(TransportAddr::Relay(
-            r.parse().map_err(|_| NetError::Connect)?,
+            r.parse().map_err(|_| NetError::Connect("relay-url"))?,
         ));
     }
     Ok(EndpointAddr::from_parts(pk, addrs))
@@ -211,7 +218,7 @@ pub async fn connect(
     let conn = tokio::time::timeout(HANDSHAKE_TIMEOUT, ep.connect(addr, alpn))
         .await
         .map_err(|_| NetError::Timeout)?
-        .map_err(|_| NetError::Connect)?;
+        .map_err(|e| NetError::Connect(connect_kind(&e)))?;
     if conn.remote_id().as_bytes() != &id.0 {
         conn.close(VarInt::from_u32(code::NOT_MEMBER), b"");
         return Err(NetError::Identity);
@@ -500,18 +507,62 @@ pub async fn watch_paths(conn: &Connection, mut note: impl FnMut(PathNote)) {
 /// The application close code the peer used, if the connection was closed by it.
 pub fn peer_close_code(conn: &Connection) -> Option<u32> {
     match conn.close_reason()? {
-        iroh::endpoint::ConnectionError::ApplicationClosed(c) => {
-            u32::try_from(c.error_code.into_inner()).ok()
-        }
+        ConnectionError::ApplicationClosed(c) => u32::try_from(c.error_code.into_inner()).ok(),
         _ => None,
     }
 }
 
-/// Maps a stream failure to the peer's close code when there is one.
+/// Maps a stream failure to the peer's close code when there is one, or to
+/// [`NetError::Lost`] when the connection ended without one.
 pub fn explain(conn: &Connection, e: NetError) -> NetError {
     match (&e, peer_close_code(conn)) {
         (NetError::Stream(_) | NetError::Timeout, Some(c)) => NetError::Closed(c),
+        (NetError::Stream(_), None) => match conn.close_reason() {
+            Some(r) if !matches!(r, ConnectionError::LocallyClosed) => {
+                NetError::Lost(close_kind(&r))
+            }
+            _ => e,
+        },
         _ => e,
+    }
+}
+
+/// How a connection ended (diagnostics).
+pub fn close_kind(e: &ConnectionError) -> &'static str {
+    match e {
+        ConnectionError::VersionMismatch => "version",
+        ConnectionError::TransportError(_) => "transport",
+        ConnectionError::ConnectionClosed(_) => "aborted",
+        ConnectionError::ApplicationClosed(_) => "closed",
+        ConnectionError::Reset => "reset",
+        ConnectionError::TimedOut => "idle",
+        ConnectionError::LocallyClosed => "local",
+        ConnectionError::CidsExhausted => "cids",
+    }
+}
+
+/// Why a QUIC/TLS handshake failed (diagnostics).
+pub fn connecting_kind(e: &ConnectingError) -> &'static str {
+    match e {
+        ConnectingError::ConnectionError { source, .. } => close_kind(source),
+        ConnectingError::HandshakeFailure { .. } => "auth",
+        _ => "connecting",
+    }
+}
+
+/// Why `Endpoint::connect` failed (diagnostics).
+fn connect_kind(e: &ConnectError) -> &'static str {
+    match e {
+        ConnectError::Connect { source, .. } => match source {
+            ConnectWithOptsError::NoAddress { .. } => "no-address",
+            ConnectWithOptsError::Noq { .. } => "quic",
+            ConnectWithOptsError::EndpointClosed { .. } => "endpoint-closed",
+            ConnectWithOptsError::InvalidAlpn { .. } => "alpn",
+            _ => "setup",
+        },
+        ConnectError::Connecting { source, .. } => connecting_kind(source),
+        ConnectError::Connection { source, .. } => close_kind(source),
+        _ => "other",
     }
 }
 

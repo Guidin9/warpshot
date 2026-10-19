@@ -22,7 +22,7 @@ use iroh::{
 };
 use tokio::{sync::oneshot, time::Instant};
 
-use super::{HANDSHAKE_TIMEOUT, NetError, close, xfer as nx};
+use super::{HANDSHAKE_TIMEOUT, NetError, close, connecting_kind, explain, xfer as nx};
 use crate::{
     keys::{self, EndpointId},
     log::Log,
@@ -44,9 +44,14 @@ struct State {
     pairing: Option<oneshot::Sender<Connection>>,
 }
 
+/// Hears why an incoming connection went nowhere (diagnostics: kinds and
+/// codes only, never addresses).
+pub type DropHook = Box<dyn Fn(String) + Send + Sync>;
+
 #[derive(Default)]
 pub struct Dispatcher {
     state: Mutex<State>,
+    on_drop: Option<DropHook>,
 }
 
 impl std::fmt::Debug for Dispatcher {
@@ -65,6 +70,21 @@ enum Route {
 impl Dispatcher {
     pub fn new() -> Arc<Self> {
         Arc::default()
+    }
+
+    /// Like [`Dispatcher::new`]; `hook` hears about every incoming connection
+    /// that failed or was turned away.
+    pub fn with_hook(hook: DropHook) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::default(),
+            on_drop: Some(hook),
+        })
+    }
+
+    fn dropped(&self, why: impl FnOnce() -> String) {
+        if let Some(h) = &self.on_drop {
+            h(why());
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -145,9 +165,20 @@ impl Dispatcher {
     }
 
     async fn route(&self, ep: &Endpoint, inc: Incoming) {
-        let Ok(accepting) = inc.accept() else { return };
-        let Ok(Ok(conn)) = tokio::time::timeout(HANDSHAKE_TIMEOUT, accepting).await else {
+        let Ok(accepting) = inc.accept() else {
+            self.dropped(|| "incoming".into());
             return;
+        };
+        let conn = match tokio::time::timeout(HANDSHAKE_TIMEOUT, accepting).await {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => {
+                self.dropped(|| format!("tls {}", connecting_kind(&e)));
+                return;
+            }
+            Err(_) => {
+                self.dropped(|| "tls timeout".into());
+                return;
+            }
         };
         if conn.alpn() == pair::ALPN {
             let tx = self.lock().pairing.take();
@@ -157,20 +188,27 @@ impl Dispatcher {
             };
             if let Some(conn) = unclaimed {
                 close(&conn, code::PROTOCOL);
+                self.dropped(|| "pairing closed".into());
             }
             return;
         }
         if conn.alpn() != xfer::ALPN {
             close(&conn, code::PROTOCOL);
+            self.dropped(|| "alpn".into());
             return;
         }
         let Some(log) = self.lock().log.clone() else {
             close(&conn, code::PROTOCOL);
+            self.dropped(|| "no log".into());
             return;
         };
         // Admission and handshake; on failure `accept` has closed the connection.
-        let Ok(s) = nx::accept(ep, conn, &log).await else {
-            return;
+        let s = match nx::accept(ep, conn.clone(), &log).await {
+            Ok(s) => s,
+            Err(e) => {
+                self.dropped(|| format!("handshake {:?}", explain(&conn, e)));
+                return;
+            }
         };
         let route = {
             let mut st = self.lock();
@@ -190,10 +228,14 @@ impl Dispatcher {
                 // The send gave up in the meantime.
                 if let Err(s) = tx.send(s) {
                     close(&s.conn, code::CANCELLED);
+                    self.dropped(|| "late".into());
                 }
             }
             Route::Cancelled => close(&s.conn, code::CANCELLED),
-            Route::Unknown => close(&s.conn, code::PROTOCOL),
+            Route::Unknown => {
+                close(&s.conn, code::PROTOCOL);
+                self.dropped(|| "unknown session".into());
+            }
         }
     }
 }
