@@ -36,6 +36,8 @@ type Waiter = (EndpointId, oneshot::Sender<nx::Session>);
 struct State {
     /// The endpoint the accept loop runs on (at most one is open at a time).
     ep: Option<Endpoint>,
+    /// Counts accept loops, so a loop that ends forgets only its own endpoint.
+    ep_gen: u64,
     /// Admission checks use the log the latest send registered with.
     log: Option<Log>,
     waiting: HashMap<[u8; 16], Waiter>,
@@ -139,25 +141,30 @@ impl Dispatcher {
 
     /// Starts the accept loop on `ep` unless one runs on the open endpoint.
     fn run_on(self: &Arc<Self>, ep: &Endpoint) {
-        {
+        let generation = {
             let mut st = self.lock();
             if st.ep.as_ref().is_some_and(|e| !e.is_closed()) {
                 return;
             }
             st.ep = Some(ep.clone());
-        }
+            st.ep_gen = st.ep_gen.wrapping_add(1);
+            st.ep_gen
+        };
         let (this, ep) = (Arc::clone(self), ep.clone());
-        tokio::spawn(async move { this.accept_loop(ep).await });
+        tokio::spawn(async move { this.accept_loop(ep, generation).await });
     }
 
-    async fn accept_loop(self: Arc<Self>, ep: Endpoint) {
+    async fn accept_loop(self: Arc<Self>, ep: Endpoint, generation: u64) {
         while let Some(inc) = ep.accept().await {
             let (this, ep) = (Arc::clone(&self), ep.clone());
             tokio::spawn(async move { this.route(&ep, inc).await });
         }
-        // The endpoint closed: no dial can arrive for the sends still waiting.
+        // The endpoint is closing: no dial can arrive for the sends still
+        // waiting. Let go of it now: `accept` ends when closing starts, but
+        // `is_closed` turns true only once it has fully stopped, and iroh
+        // keeps the UDP sockets bound while any clone lives.
         let mut st = self.lock();
-        if st.ep.as_ref().is_some_and(Endpoint::is_closed) {
+        if st.ep_gen == generation {
             st.ep = None;
             st.waiting.clear();
             st.pairing = None;

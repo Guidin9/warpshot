@@ -1156,6 +1156,61 @@ async fn a_failed_dial_is_retried_but_not_a_refusal() {
     ep_phone.close().await;
 }
 
+/// The idle close really frees the endpoint (§9 "Lifetime"): the dispatcher's
+/// accept loop lets go of it, so iroh unbinds its UDP sockets. It used to keep
+/// a closed endpoint, with its sockets, until the next transfer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_close_frees_the_dispatchers_endpoint() {
+    use std::{sync::Arc, time::Duration};
+    use warpshot_core::net::{dispatch::Dispatcher, manager::EndpointManager};
+
+    let (pc, phone) = paired_pc_and_phone().await;
+    let mgr = EndpointManager::with_idle(
+        &pc.keys.ik,
+        Relay::Disabled,
+        Duration::from_millis(300),
+        None,
+    );
+    tokio::spawn(Arc::clone(&mgr).run_reaper());
+    let disp = Dispatcher::new();
+    let ports = {
+        let (ep, _lease) = mgr.acquire().await.unwrap();
+        let _w = disp
+            .expect(&ep, phone.id(), pc.log.as_ref().unwrap())
+            .unwrap();
+        ep.bound_sockets()
+    };
+    assert!(!ports.is_empty());
+    let mut freed = false;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        freed = !mgr.is_open().await && ports.iter().all(|p| std::net::UdpSocket::bind(p).is_ok());
+        if freed {
+            break;
+        }
+    }
+    assert!(freed, "UDP sockets still bound after the idle close");
+    // The dispatcher still serves a new endpoint afterwards.
+    let (ep, _lease) = mgr.acquire().await.unwrap();
+    let ep_phone = net::bind(&phone.keys.ik, Relay::Disabled).await.unwrap();
+    let mut w = disp
+        .expect(&ep, phone.id(), pc.log.as_ref().unwrap())
+        .unwrap();
+    let (pc_id, dial, session) = (pc.id(), net::dial_info(&ep), w.session());
+    let (dialed, arrived) = tokio::join!(
+        nx::dial(
+            &ep_phone,
+            phone.log.as_ref().unwrap(),
+            &pc_id,
+            &dial,
+            session
+        ),
+        w.arrived()
+    );
+    assert!(dialed.is_ok() && arrived.is_ok());
+    ep_phone.close().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatcher_routes_and_answers_cancelled_sessions() {
     use std::time::Duration;

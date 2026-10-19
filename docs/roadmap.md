@@ -173,6 +173,12 @@ only "receive failed Network", so the failing step is unknown.
   failure stays 8 s.
 - [ ] On the next occurrence: read `adb logcat -s Warpshot` and the agent's
   `debug.counters` to find the failing step, then fix the cause.
+- [x] Found while measuring the agent: the dispatcher kept a closed endpoint,
+  and with it iroh's two UDP sockets, until the next transfer (since
+  2026-10-12): `accept()` ends when closing starts, `is_closed()` turns true
+  only once it has stopped, so the cleanup check missed. The accept loop now
+  lets go of its own endpoint (generation count); test
+  `idle_close_frees_the_dispatchers_endpoint`.
 
 ## Faz 2 and 3
 
