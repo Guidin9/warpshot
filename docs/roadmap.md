@@ -211,10 +211,10 @@ Open, found the same day:
 - [ ] The PC waits its full 120 s when the woken phone has already given up;
   the phone could report the failure through the server (sealed, like a
   wake). Low priority now that the cause is fixed.
-- [ ] rustls 0.23.45 → 0.23.46 (RUSTSEC-2026-0346…0349): CI's `cargo deny`
-  has been red since 2026-10-16; `cargo update -p rustls` needs a small
-  download (ask first). Lint also lists firebase-messaging 25.0.1 (we use
-  24.1.0).
+- [x] rustls 0.23.45 → 0.23.46 (RUSTSEC-2026-0346…0349), and the advisories
+  found on 2026-10-23: rustls-webpki 0.103.16 (-0382), webpki-roots 1.0.11
+  (-0381), ctutils 0.4.5 (-0385). CI's `cargo deny` is green again.
+- [ ] Android lint lists firebase-messaging 25.0.1 (we use 24.1.0).
 
 ## Faz 2 and 3
 

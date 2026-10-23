@@ -1035,12 +1035,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("warpshot-names-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let real = "KKTC ÖĞRENCİ İZİNLERİ SİSTEMİ _ TRNC STUDENT PERMISSION SYSTEM.pdf";
-        // 204 UTF-16 units (fine on NTFS) but 404 bytes of UTF-8.
-        let long = format!("{}.pdf", "ö".repeat(200));
-        for (file, want) in [
-            (real.to_string(), real.to_string()),
-            (long, format!("{}.pdf", "ö".repeat(125))),
-        ] {
+        let mut cases = vec![(real.to_string(), real.to_string())];
+        // 204 UTF-16 units (fine on NTFS) but 404 bytes of UTF-8: Linux file
+        // systems count bytes and can't hold it (`sanitize` tests the cut alone).
+        if cfg!(windows) {
+            let long = format!("{}.pdf", "ö".repeat(200));
+            cases.push((long, format!("{}.pdf", "ö".repeat(125))));
+        }
+        for (file, want) in cases {
             let p = dir.join(&file);
             std::fs::write(&p, b"x").unwrap();
             let it = file_item(1, &p, 0).unwrap().item;

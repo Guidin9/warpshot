@@ -1112,7 +1112,21 @@ async fn a_failed_dial_is_retried_but_not_a_refusal() {
         net::flow::answer_connect(&ep_phone, &phone_log, &pc_id, session, &pc_addr, record),
         async {
             ep_pc.accept().await.unwrap().refuse();
-            let conn = accept_conn(&ep_pc).await;
+            // A datagram of the refused attempt that lands after the refusal
+            // makes one more incoming (noq forgets the refused connection id),
+            // and its handshake never completes. Skip it, as the dispatcher
+            // does; waiting on it timed this test out after 30 s on Windows CI.
+            let conn = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let inc = ep_pc.accept().await.expect("incoming");
+                    let hs = inc.accept().expect("accepting");
+                    if let Ok(Ok(conn)) = tokio::time::timeout(Duration::from_secs(5), hs).await {
+                        break conn;
+                    }
+                }
+            })
+            .await
+            .expect("the redial gets through");
             nx::accept(&ep_pc, conn, &pc_log).await
         }
     );
